@@ -31,10 +31,15 @@ def main():
         or "; ".join(result.get("warnings", []))
     )
 
+    # The sheet shows only two outcomes. A workbook that was built and e-mailed counts as Succeeded,
+    # including runs the scraper labelled Partial (the coverage note stays in Status Details).
+    raw_status = status.get("status", "Failed")
+    final_status = "Succeeded" if raw_status in ("Completed", "Email Sent", "Partial") else "Failed"
+
     payload = {
         "secret": os.environ.get("SHEETS_CALLBACK_SECRET", ""),
         "request_id": request_id,
-        "status": status.get("status", "Failed"),
+        "status": final_status,
         "details": details,
         "job_url": os.environ.get("BUILD_URL", ""),
     }
@@ -70,8 +75,9 @@ def main():
             ) from None
 
         if response.status >= 300 or not callback_result.get("ok"):
+            reason = str(callback_result.get("error", "no reason given"))[:80]
             raise RuntimeError(
-                f"Google Sheets callback was rejected (HTTP {response.status})"
+                f"Google Sheets callback was rejected (HTTP {response.status}): {reason}"
             )
 
     print(f"Google Sheets callback succeeded for {request_id}")

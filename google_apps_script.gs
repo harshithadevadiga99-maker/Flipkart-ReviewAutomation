@@ -22,6 +22,7 @@ function onFormSubmit(e) {
     sheet = e.range.getSheet();
     row = e.range.getRow();
     cols = ensureStatusColumns_(sheet);
+    if (sheet.getRange(row, cols["Request ID"]).getValue()) return;
     const vals = e.namedValues || {};
     const pick = (label) => (vals[label] && vals[label][0] || "").trim();
     const durationRaw = pick("Duration");
@@ -49,7 +50,7 @@ function onFormSubmit(e) {
       duration: n, durationUnit: unit, recipientEmail: recipient, startDate: startDate, endDate: endDate});
     dispatchWorkflow_(inputs);
     writeStatus_(sheet, row, cols, {"Request Status": "Queued", "GitHub Actions Run": "",
-      "Status Details": "Workflow dispatched to GitHub Actions; waiting for the self-hosted runner", "Updated At": new Date()});
+      "Status Details": "Workflow dispatched to GitHub Actions; waiting for a GitHub-hosted runner","Updated At": new Date()});
   } catch (err) {
     if (sheet && row && cols) writeStatus_(sheet, row, cols, {
       "Request Status": "Failed", "Status Details": String(err && err.message || err).slice(0, 500), "Updated At": new Date()});
@@ -62,7 +63,8 @@ function onFormSubmit(e) {
 function doPost(e) {
   const props = PropertiesService.getScriptProperties();
   const expected = props.getProperty("SHEETS_CALLBACK_SECRET");
-  const payload = JSON.parse(e && e.postData && e.postData.contents || "{}");
+  let payload = {};
+  try { payload = JSON.parse(e && e.postData && e.postData.contents || "{}"); } catch (_) { return json_({ok: false, error: "bad request"}); }
   if (!expected || !payload.secret || payload.secret !== expected) return json_({ok: false, error: "unauthorized"});
   const id = String(payload.request_id || "");
   if (!/^REQ-\d{8}-[A-Za-z0-9_-]{1,40}$/.test(id)) return json_({ok: false, error: "invalid request id"});
@@ -122,11 +124,13 @@ function recipientFromForm_(values) {
 }
 
 function validProductUrl_(value) {
-  try {
-    const u = new URL(value);
-    return u.protocol === "https:" && !u.username && !u.password && (u.port === "" || u.port === "443") &&
-      (u.hostname === "flipkart.com" || u.hostname.endsWith(".flipkart.com")) && /\/p\//.test(u.pathname);
-  } catch (_) { return false; }
+  const m = /^https:\/\/([^\/?#@:]+)(?::(\d+))?(\/[^?#]*)?(?:[?#].*)?$/i.exec(String(value).trim());
+  if (!m) return false;
+  const host = m[1].toLowerCase();
+  const port = m[2] || "";
+  const path = m[3] || "";
+  return (port === "" || port === "443") &&
+    (host === "flipkart.com" || host.endsWith(".flipkart.com")) && /\/p\//.test(path);
 }
 
 function ensureStatusColumns_(sheet) {

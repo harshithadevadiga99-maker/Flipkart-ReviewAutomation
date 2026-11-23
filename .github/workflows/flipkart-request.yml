@@ -37,22 +37,20 @@ permissions:
   contents: read
 
 concurrency:
-  group: flipkart-self-hosted-scraper
+  group: flipkart-scraper
   cancel-in-progress: false
 
 jobs:
   scrape:
-    runs-on: [self-hosted, windows, x64]
-    timeout-minutes: 240
+    runs-on: windows-latest
+    timeout-minutes: 120
     env:
       PYTHONUNBUFFERED: "1"
       PYTHONUTF8: "1"
       FKART_HEADLESS: "1"
       REQUEST_ID: ${{ inputs.REQUEST_ID }}
-      PRODUCT_URL: ${{ inputs.PRODUCT_URL }}
       DURATION: ${{ inputs.DURATION }}
       DURATION_UNIT: ${{ inputs.DURATION_UNIT }}
-      RECIPIENT_EMAIL: ${{ inputs.RECIPIENT_EMAIL }}
       START_DATE: ${{ inputs.START_DATE }}
       END_DATE: ${{ inputs.END_DATE }}
       FKART_LOGIN_ID: ${{ secrets.FKART_LOGIN_ID }}
@@ -72,11 +70,23 @@ jobs:
         shell: pwsh
         working-directory: .
     steps:
+      - name: Hide request details from the public logs
+        run: |
+          $e = Get-Content -Raw $env:GITHUB_EVENT_PATH | ConvertFrom-Json
+          foreach ($v in @($e.inputs.RECIPIENT_EMAIL, $e.inputs.PRODUCT_URL)) {
+            if ($v) { Write-Host "::add-mask::$v" }
+          }
+
       - name: Check out project
         uses: actions/checkout@v4
 
-      - name: Keep Chrome profile outside the cleaned checkout
-        run: Add-Content $env:GITHUB_ENV "FKART_CHROME_PROFILE_DIR=$env:LOCALAPPDATA\FlipkartAutomation\ChromeProfile"
+      - name: Use a temporary Chrome profile
+        run: Add-Content $env:GITHUB_ENV "FKART_CHROME_PROFILE_DIR=$env:RUNNER_TEMP/ChromeProfile"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
 
       - name: Install Python dependencies
         run: |
@@ -84,19 +94,11 @@ jobs:
           python -m pip install -r requirements.txt
 
       - name: Run scraper and email report
+        env:
+          PRODUCT_URL: ${{ inputs.PRODUCT_URL }}
+          RECIPIENT_EMAIL: ${{ inputs.RECIPIENT_EMAIL }}
         run: python run_request.py --from-env
 
       - name: Update Google Sheet
         if: always()
         run: python update_google_sheet.py
-
-      - name: Keep request status and report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: flipkart-${{ inputs.REQUEST_ID }}
-          path: |
-            reports/${{ inputs.REQUEST_ID }}/request_status.json
-            reports/${{ inputs.REQUEST_ID }}/*.xlsx
-          if-no-files-found: ignore
-          retention-days: 14
