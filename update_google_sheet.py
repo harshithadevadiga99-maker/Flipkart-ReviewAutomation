@@ -3,6 +3,8 @@ import json
 import os
 import re
 import sys
+import time
+from urllib.error import URLError
 from urllib.request import Request, urlopen
 
 from fk_common import BASE_DIR
@@ -64,21 +66,36 @@ def main():
         method="POST",
     )
 
-    with urlopen(req, timeout=30) as response:
-        response_body = response.read().decode("utf-8")
+    # The Apps Script web app answers "busy" while it is handling another request and the network can
+    # blip: retry those a few times. Real rejections (wrong secret, unknown request) fail at once.
+    delays = (0, 5, 15, 30)
+    last_error = None
+    for attempt, delay in enumerate(delays, start=1):
+        if delay:
+            time.sleep(delay)
+        try:
+            with urlopen(req, timeout=60) as response:
+                response_body = response.read().decode("utf-8")
+                status_code = response.status
+        except (URLError, TimeoutError, OSError) as exc:
+            last_error = RuntimeError(f"Google Sheets callback could not be reached: {type(exc).__name__}")
+            continue
 
         try:
             callback_result = json.loads(response_body)
         except json.JSONDecodeError:
-            raise RuntimeError(
-                f"Apps Script returned a non-JSON response (HTTP {response.status})"
-            ) from None
+            last_error = RuntimeError(f"Apps Script returned a non-JSON response (HTTP {status_code})")
+            continue
 
-        if response.status >= 300 or not callback_result.get("ok"):
-            reason = str(callback_result.get("error", "no reason given"))[:80]
-            raise RuntimeError(
-                f"Google Sheets callback was rejected (HTTP {response.status}): {reason}"
-            )
+        if status_code < 300 and callback_result.get("ok"):
+            last_error = None
+            break
+        reason = str(callback_result.get("error", "no reason given"))[:80]
+        last_error = RuntimeError(f"Google Sheets callback was rejected (HTTP {status_code}): {reason}")
+        if reason != "busy":
+            break
+    if last_error:
+        raise last_error
 
     print(f"Google Sheets callback succeeded for {request_id}")
     return 0
