@@ -123,3 +123,22 @@ def test_request_email_retries_a_pre_acceptance_network_failure(tmp_path, monkey
     record = mailer.send_request_report("REQ-20261022-005", "recipient@example.com", "Product",
                                         "2026-10-01", "2026-10-22", workbook, 1, "success")
     assert calls == {"count": 2, "sent": 1} and record["status"] == "sent"
+
+
+@pytest.mark.parametrize("status", ["success", "partial", "PARTIAL"])
+def test_request_email_says_completed_for_a_delivered_report(tmp_path, monkeypatch, status):
+    import Auto_Email_Flipkart_OnlyJk as mailer
+    monkeypatch.setattr(mailer, "__file__", str(tmp_path / "mailer.py"))
+    sent = []
+    monkeypatch.setattr(mailer, "_send_request", lambda message, attempts=3: sent.append(message))
+    folder = tmp_path / "reports" / "REQ-20261022-009"
+    folder.mkdir(parents=True)
+    workbook = folder / "Product.xlsx"
+    workbook.write_bytes(b"x")
+    mailer.send_request_report("REQ-20261022-009", "a@example.com", "Product", "2026-10-01", "2026-10-22",
+                               workbook, 12, status)
+    body = sent[0].get_body(preferencelist=("plain",)).get_content()
+    assert "Collection status: Completed" in body
+    assert "partial" not in body.lower() and "success" not in body.lower()
+    assert "Time sheet" in body and "Reviews collected: 12" in body
+
