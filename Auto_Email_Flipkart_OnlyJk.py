@@ -125,9 +125,13 @@ def send_request_report(request_id, recipient, product, start_date, end_date, wo
         msg["To"] = recipient
         msg["Subject"] = f"Flipkart review report: {product} ({start_date} to {end_date})"
         msg["X-Request-ID"] = request_id
+        # The email says "Completed" for any run that produced a report (success or partial). The exact status and
+        # the coverage details stay in the workbook's Time sheet (Collection Status / Coverage Status columns).
+        status_label = "Completed" if str(status).strip().lower() in ("success", "partial") else status
         msg.set_content(f"Request: {request_id}\nProduct: {product}\nReview date range: {start_date} to {end_date}\n"
-                        f"Reviews collected: {review_count}\nCollection status: {status}\n\n"
-                        "The attached workbook contains individually extracted reviews and collection notes.")
+                        f"Reviews collected: {review_count}\nCollection status: {status_label}\n\n"
+                        "The attached workbook contains individually extracted reviews. Collection and coverage "
+                        "details are on its Time sheet.")
         msg.add_attachment(file_path.read_bytes(), maintype=XLSX_MIME[0], subtype=XLSX_MIME[1], filename=file_path.name)
         try:
             _send_request(msg)
