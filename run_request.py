@@ -131,11 +131,23 @@ def run(data):
                       "completed_at": datetime.now().isoformat(timespec="seconds")})
         # workbook = out / (re.sub(r'[\\/*?:"<>|]', "", resolved_name).strip() + ".xlsx")
         workbook = out / safe_filename(resolved_name)
-        if result.get("status") in ("success", "partial") and workbook.is_file():
+        if result.get("no_reviews_found"):
+            # No reviews in the requested date range: no empty report, just a message e-mail.
+            state["status"] = "Completed"
+            delivery = _send_with_retry(request.request_id, request.recipient_email, resolved_name,
+                                        request.start_date.isoformat(), request.end_date.isoformat(), None,
+                                        0, "success", request.duration, request.duration_unit, "Flipkart", True)
+            state["email_delivery"] = delivery
+            state["status"] = "Email Sent"
+            if result.get("status") == "no_reviews":   # page showed no reviews at all: let the admin double-check
+                _alert_admin("Flipkart report: no reviews found",
+                             f"Request {request.request_id} for {resolved_name}: {result.get('failure_reason') or 'no review entries found'}")
+        elif result.get("status") in ("success", "partial") and workbook.is_file():
             state["status"] = "Partial" if result["status"] == "partial" else "Completed"
             delivery = _send_with_retry(request.request_id, request.recipient_email, resolved_name,
                                            request.start_date.isoformat(), request.end_date.isoformat(), workbook,
-                                           result.get("valid_reviews", 0), result["status"])
+                                           result.get("valid_reviews", 0), result["status"],
+                                           request.duration, request.duration_unit)
             state["email_delivery"] = delivery
             state["status"] = "Email Sent" if state["status"] == "Completed" else "Partial"
         else:
@@ -192,13 +204,3 @@ def main(argv=None):
 
 if __name__ == "__main__":
     sys.exit(main())
-
-
-
-
-
-
-
-
-
-

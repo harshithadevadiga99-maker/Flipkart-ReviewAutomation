@@ -689,32 +689,8 @@ def classify_page(url, title, text, reviews_detected=0):
 # --------------------------------------------------------------------------- #
 # Negative-review classification (bug-fixed regexes)
 # --------------------------------------------------------------------------- #
-KEYWORD_PATTERNS = {
-    "Connectivity": r"\b(connect(ion|ivity)?|not\s*connected|unable\s*to\s*connect|bad\s*connectivity)\b",
-    "Device disconnection": r"\bdisconnect(ion|ing|s|ed)?\b",
-    "EQ Customization": r"\b(eq|equali[sz]er)\b",
-    "Login": r"\b(login|log\s*in|sign\s*in|otp)\b",
-    "Location Permission": r"\b(location|gps|geolocation)\b",
-    "Sound Quality": r"\b(sound|audio)(\s*quality)?\b",
-    "Phone becoming silent": r"\bsilent\b",
-    "Vibration Mode": r"\b(vibration\s*mode|viberation\s*mode|vibrate|vibrates)\b",
-    "SKU Not supported": r"can'?t\s*connect.*app|\bnot\s*(support(ed)?|show(n|ing)|found|recogni[sz]ed|compatible)\b.{0,15}\bapp\b",
-    "In Ear Detection (Dev)": r"in[\s-]*ear\s*detection|ear\s*direction",
-    "Auto Pause (dev)": r"\b(auto.{0,10}pause|pause.{0,10}auto)\b",
-    "Positive Feedback": r"(?<!not\s)(?<!no\s)(?<!never\s)\b(super|good|nice|best)\b",
-    "Powering off (Device)": r"\b(auto\s*on\s*off|powering\s*off|power(s|ing)?\s*off)\b",
-    "Crash": r"\b(crash(es|ed|ing)?|hang(s|ing)?)\b",
-    "Package box (Device)": r"\b(open\s*box|package\s*box)\b",
-    "Battery": r"\b(battery|battery\s*(percentage|level))\b",
-    "Calibration": r"\b(calibration|3d)\b",
-}
-_COMPILED = {k: re.compile(v, re.I) for k, v in KEYWORD_PATTERNS.items()}
-
-
-def classify_review(text):
-    """Return (reason_string, consolidated_reason)."""
-    found = [k for k, p in _COMPILED.items() if p.search(text or "")]
-    reason = ", ".join(found) if found else "Generic Comments"
-    if len(found) > 1:
-        return reason, "Decision yet to be confirmed"
-    return reason, (found[0] if found else "Generic Comments")
+def classify_review(text, sentiment=None):
+    """Return (reason_detail, consolidated_reason). The rules live in fk_reasons.py (free, offline).
+    `sentiment` is 'Positive' or 'Negative' - the sheet the review is listed on."""
+    from fk_reasons import classify_review as _classify
+    return _classify(text, sentiment)

@@ -70,7 +70,11 @@
     "section_retries": 2,
     "list_recoveries": 2,
     "parallel_workers": 4,
-    "block_images": true
+    "block_images": true,
+    "expand_truncated_reviews": true,
+    "expand_max_per_round": 40,
+    "expand_round_seconds": 90,
+    "expand_wait_seconds": 3
   },
   "selectors": {
     "review_block": [

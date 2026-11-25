@@ -1,4 +1,3 @@
-
 """
 Scraping pipeline that is independent of Selenium.
 
@@ -804,6 +803,17 @@ def scrape_product(page, name, url, settings, selectors, today=None):
                   f"({m.get('matched_to_rated', 0)} matched to a rated review, "
                   f"{m.get('unrated_kept', 0)} kept with sentiment inferred from text)")
         data["reviews"] = reviews
+        try:
+            from fk_browser import EXPAND_STATS
+            if EXPAND_STATS.get("expanded") or EXPAND_STATS.get("not_expanded"):
+                res["notes"].append(
+                    f"cut-off reviews opened for the full text: {EXPAND_STATS['expanded']} "
+                    f"(photo viewer {EXPAND_STATS['photo_viewer']}, 'Complete Review' panel "
+                    f"{EXPAND_STATS['complete_review_panel']}, 'more' link {EXPAND_STATS['inline']}, "
+                    f"text click {EXPAND_STATS['text_click']}); could not be opened, kept partial: "
+                    f"{EXPAND_STATS['not_expanded']}")
+        except Exception:
+            pass
 
         if not info["scanned"]:
             state, reason = classify_page(page.url, page.title, page.text(), 0)
@@ -851,5 +861,3 @@ def scrape_product(page, name, url, settings, selectors, today=None):
         except Exception:
             pass
         return res, data
-
-

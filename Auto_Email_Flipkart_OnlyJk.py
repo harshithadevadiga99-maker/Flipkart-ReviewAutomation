@@ -90,7 +90,29 @@ def _send_request(msg, attempts=3):
             raise RequestDeliveryError(type(exc).__name__, uncertain=uncertain) from None
 
 
-def send_request_report(request_id, recipient, product, start_date, end_date, workbook, review_count, status):
+def _duration_label(duration, unit, start_date, end_date):
+    """Human duration, e.g. '4 weeks'. Uses what the user submitted; falls back to the date span."""
+    try:
+        n = int(duration)
+    except (TypeError, ValueError):
+        n = 0
+    unit = str(unit or "").strip().lower()
+    if n > 0 and unit:
+        unit = unit.rstrip("s")
+        return f"{n} {unit}{'' if n == 1 else 's'}"
+    from datetime import date
+    days = (date.fromisoformat(str(end_date)) - date.fromisoformat(str(start_date))).days + 1
+    if days < 14:
+        return f"{days} day{'' if days == 1 else 's'}"
+    if days < 60:
+        w = round(days / 7)
+        return f"{w} week{'' if w == 1 else 's'}"
+    m = round(days / 30.4)
+    return f"{m} month{'' if m == 1 else 's'}"
+
+
+def send_request_report(request_id, recipient, product, start_date, end_date, workbook, review_count, status,
+                        duration=None, duration_unit=None, platform="Flipkart", no_reviews=False):
     """Send exactly one request-scoped workbook, guarded by a persistent idempotency marker.
 
     A marker is claimed before contacting SMTP. An interrupted/uncertain attempt is intentionally
@@ -106,10 +128,12 @@ def send_request_report(request_id, recipient, product, start_date, end_date, wo
         raise ValueError("Invalid request id")
     if not EMAIL_RE.fullmatch(str(recipient or "")):
         raise ValueError("Invalid recipient email")
-    file_path = Path(workbook).resolve()
     expected_parent = (Path(__file__).resolve().parent / "reports" / request_id).resolve()
-    if file_path.parent != expected_parent or file_path.suffix.lower() != ".xlsx" or not file_path.is_file():
-        raise ValueError("Workbook must be the existing .xlsx file inside this request's report directory")
+    file_path = None
+    if not no_reviews:   # no_reviews -> message only, no workbook is attached
+        file_path = Path(workbook).resolve()
+        if file_path.parent != expected_parent or file_path.suffix.lower() != ".xlsx" or not file_path.is_file():
+            raise ValueError("Workbook must be the existing .xlsx file inside this request's report directory")
     marker = expected_parent / ".email_delivery.json"
     record = {"request_id": request_id, "status": "sending",
               "started_at": time.strftime("%Y-%m-%dT%H:%M:%S%z")}
@@ -123,16 +147,25 @@ def send_request_report(request_id, recipient, product, start_date, end_date, wo
             json.dump(record, stream)
         msg = EmailMessage()
         msg["To"] = recipient
-        msg["Subject"] = f"Flipkart review report: {product} ({start_date} to {end_date})"
+        from product_resolver import short_product_name
+        product = short_product_name(product)
+        msg["Subject"] = f"{platform} review report: {product} ({start_date} to {end_date})"
         msg["X-Request-ID"] = request_id
-        # The email says "Completed" for any run that produced a report (success or partial). The exact status and
-        # the coverage details stay in the workbook's Time sheet (Collection Status / Coverage Status columns).
-        status_label = "Completed" if str(status).strip().lower() in ("success", "partial") else status
-        msg.set_content(f"Request: {request_id}\nProduct: {product}\nReview date range: {start_date} to {end_date}\n"
-                        f"Reviews collected: {review_count}\nCollection status: {status_label}\n\n"
-                        "The attached workbook contains individually extracted reviews. Collection and coverage "
-                        "details are on its Time sheet.")
-        msg.add_attachment(file_path.read_bytes(), maintype=XLSX_MIME[0], subtype=XLSX_MIME[1], filename=file_path.name)
+        # Email status is binary: "Completed" for any run that produced a report (success or partial), else "Failed".
+        # The exact status and coverage details are kept in run_report.json / request_status.json.
+        status_label = "Completed" if (no_reviews or str(status).strip().lower() in ("success", "partial")) else "Failed"
+        span = _duration_label(duration, duration_unit, start_date, end_date)
+        msg.set_content(f"Report: {platform} review report\n"
+                        f"Platform: {platform}\n"
+                        f"Product name: {product}\n"
+                        f"Review date range: {start_date} to {end_date} ({span})\n"
+                        f"Status: {status_label}\n\n"
+                        + ("No reviews were found for this product within the selected review date range, "
+                           "so no report has been generated."
+                           if no_reviews else
+                           "The attached workbook contains the individually extracted reviews."))
+        if file_path is not None:
+            msg.add_attachment(file_path.read_bytes(), maintype=XLSX_MIME[0], subtype=XLSX_MIME[1], filename=file_path.name)
         try:
             _send_request(msg)
         except Exception as exc:

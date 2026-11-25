@@ -1,6 +1,32 @@
 """Resolve a product directly from its Flipkart listing URL."""
 
+import re
+
 from request_flow import validate_product_url
+
+# Where Flipkart's long SEO page title stops being the product name.
+_TITLE_CUT = re.compile(r"\s+(?:Price in India|Online at|Buy\b|Online\b|Best Price|-\s*Flipkart|:\s*Flipkart|\|\s*Flipkart)",
+                        re.I)
+
+
+def short_product_name(title):
+    """Short, exact product name from Flipkart's long page title.
+
+    'boAt boAt Bassheads 100 Wired Earphones Wired Price in India - Buy boAt boAt Bassheads 100 Wired
+     Earphones Wired Online - boAt : Flipkart.com'  ->  'boAt Bassheads 100 Wired Earphones'
+    Steps: cut at the first marketing phrase, drop immediately repeated words ('boAt boAt'), and drop a
+    trailing word that already appears earlier in the name ('... Wired Earphones Wired').
+    Falls back to the original title if nothing usable is left."""
+    text = " ".join(str(title or "").split())
+    m = _TITLE_CUT.search(text)
+    name = text[:m.start()].strip(" -:|,") if m else text
+    words = []
+    for w in name.split():
+        if not words or w.lower() != words[-1].lower():
+            words.append(w)
+    if len(words) > 2 and words[-1].lower() in (x.lower() for x in words[:-1]):
+        words.pop()
+    return " ".join(words) or text
 
 
 class ProductResolutionError(ValueError):
@@ -26,4 +52,5 @@ def resolve_product(driver, product_url, timeout=20):
     title = " ".join((driver.title or "").split()).split(" | Flipkart")[0].strip()
     if not title:
         raise ProductNotFoundError("Could not read the product title from the supplied Flipkart URL")
-    return title, final_url
+    # The page title is a long SEO string; the workbook, file name and e-mail use the short product name.
+    return short_product_name(title), final_url

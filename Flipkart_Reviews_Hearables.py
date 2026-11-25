@@ -67,7 +67,9 @@ def _build_rows(reviews, negative_ratings, wanted):
     rows = []
     for r in reviews:
         if review_sentiment(r, negative_ratings) == wanted:
-            reason, final = classify_review(f"{r.get('Short Review', '')} {r.get('Review Description', '')}")
+            # the whole short review AND the whole description are read; the sheet (sentiment) decides whether
+            # the report names the problems (negative) or what the customer talks about (positive)
+            reason, final = classify_review(f"{r.get('Short Review', '')}. {r.get('Review Description', '')}", wanted)
             rows.append({**r, "Reason": reason, "Consolidated Reason": final})
     return rows
 
@@ -85,7 +87,7 @@ def build_positive_df(reviews, negative_ratings):
 def process_product(driver, url, name, settings, selectors, dirs):
     """Scrape one product and write its workbook. Returns the diagnostics/result dict. Never raises."""
     from fk_browser import LivePage, collect_keyword_feedback
-    from fk_collect import OK_STATUSES, PARTIAL, SUCCESS, get_window, scrape_product
+    from fk_collect import NO_REVIEWS, OK_STATUSES, PARTIAL, SUCCESS, get_window, scrape_product
     started = datetime.now()
     run_date, scraped_at = started.strftime("%Y-%m-%d"), started.strftime("%Y-%m-%d %H:%M:%S")
     window = get_window(settings)                  # review-date window, inclusive; (None, None) = no filter
@@ -94,7 +96,15 @@ def process_product(driver, url, name, settings, selectors, dirs):
         page.selectors = selectors
     res, data = scrape_product(page, name, url, settings, selectors, today=started.date())
     if res["status"] not in OK_STATUSES:
+        if res["status"] == NO_REVIEWS:
+            res["no_reviews_found"] = True
         log.error("[%s] %s: %s", name, res["status"].upper(), res["failure_reason"])
+        return res
+    if not data.get("reviews"):
+        # Nothing inside the requested date range: do not write an empty workbook; the caller sends a message instead.
+        res["no_reviews_found"] = True
+        res["notes"].append("no reviews found within the requested date range; no workbook was created")
+        log.info("[%s] no reviews within the requested date range - no workbook created", name)
         return res
     try:
         reviews = data["reviews"]

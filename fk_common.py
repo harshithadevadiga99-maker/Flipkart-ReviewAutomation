@@ -68,6 +68,10 @@ DEFAULT_SETTINGS = {
     "list_recoveries": 2,               # re-trigger loading when the list stalled but the loader is still visible
     "parallel_workers": 4,              # browsers reading lists at the same time (1 = one at a time)
     "block_images": True,               # do not download images: faster page loads
+    "expand_truncated_reviews": True,   # open cut-off reviews (photo viewer / Complete Review panel) for the full text
+    "expand_max_per_round": 40,         # cut-off reviews opened per scroll round
+    "expand_round_seconds": 90,         # time cap for opening cut-off reviews per scroll round
+    "expand_wait_seconds": 3,           # how long to wait for a viewer/panel to open
     # --- review date window (inclusive). Empty = no date filtering. fk_config.json sets the real values;
     #     START_DATE / END_DATE environment variables and --start-date / --end-date override them. ---
     "start_date": "",
@@ -165,4 +169,3 @@ def setup_logging():
     except OSError:
         pass
     return log
-

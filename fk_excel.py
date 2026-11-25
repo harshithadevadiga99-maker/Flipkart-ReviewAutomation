@@ -26,14 +26,22 @@ THICK = Side(style="medium", color="000000")
 BOX = Border(left=THICK, right=THICK, top=THICK, bottom=THICK)
 CENTER = Alignment(horizontal="center", vertical="center", wrap_text=True)
 STARS = (5, 4, 3, 2, 1)
+# INTERNAL row layout (what the code works with). Not every field is written to the report - see REPORT_HEADERS.
 REVIEW_HEADERS = ["User Name", "Ratings", "Short Review", "Review Description", "Date",
                   "Reason", "Consolidated Reason", "Run Date",
                   "Variant", "Location", "Helpful Votes", "Verified Purchase",
-                  "Date Status", "Possible Date Range", "Scraped At", "Source Sections"]
-# 'Date' is the REVIEW date as Flipkart shows it. 'Run Date' / 'Scraped At' are when the scraper ran.
+                  "Date Status", "Possible Date Range", "Started At", "Source Sections"]
+# Columns that appear in the Positive / Negative Reviews sheets, in this order.
+# (Reason, Helpful Votes and Date Status are kept internally but are not shown in the report.)
+REPORT_HEADERS = ["User Name", "Ratings", "Short Review", "Review Description", "Date",
+                  "Consolidated Reason", "Run Date", "Variant", "Location", "Verified Purchase",
+                  "Possible Date Range", "Started At", "Source Sections"]
+_REPORT_IDX = [REVIEW_HEADERS.index(h) for h in REPORT_HEADERS]
+_HEADER_ALIASES = {"Scraped At": "Started At"}   # header used by older workbooks
+# 'Date' is the REVIEW date as Flipkart shows it. 'Run Date' / 'Started At' are when the scraper ran.
 # 'Possible Date Range' is the earliest..latest day the review could have been written (a single day when exact).
 _RANGE_COL = REVIEW_HEADERS.index("Possible Date Range")
-_SIDE = 18                                   # first column of the aggregate-vs-extracted table (R)
+_SUMMARY_HEADERS = ("Rating", "Aggregate count, all dates (Star Ratings)", "Individually extracted reviews in date range")
 
 
 # def safe_filename(name):
@@ -288,8 +296,8 @@ def _write_review_sheet(wb, sheet_name, subtitle, product, run_date, reviews, st
     * with a date `window` (start, end) only reviews dated inside it are listed - both new reviews and
       rows already in the workbook (rows whose day is unknown but may be inside are kept and flagged)
     * leftover 'Rating only (no review)' placeholder rows from older versions are dropped
-    * the aggregate star counts stay on the 'Star Ratings' sheet; a side table compares them with the
-      number of extracted reviews but never creates rows to close the gap
+    * the aggregate star counts stay on the 'Star Ratings' sheet; a summary table at the top of the sheet
+      compares them with the number of extracted reviews but never creates rows to close the gap
     Returns (real_rows_added, legacy_placeholder_rows_removed). `stats` (dict) receives
     'out_of_range_removed' (existing rows dropped by the window) and 'new_out_of_range'."""
     window = window or (None, None)
@@ -326,9 +334,8 @@ def _write_review_sheet(wb, sheet_name, subtitle, product, run_date, reviews, st
                 stats["out_of_range_removed"] += 1
 
     if idx is not None:
-        for row in wb[sheet_name].iter_rows(min_row=5, max_col=len(REVIEW_HEADERS), values_only=True):
-            if row and row[0] is not None:
-                keep_existing(row)
+        for row in _existing_rows(wb[sheet_name]):
+            keep_existing(row)
         del wb[sheet_name]
     for row in legacy_rows:                      # rows migrated from the old single 'Reviews' sheet
         keep_existing(row)
@@ -350,14 +357,41 @@ def _write_review_sheet(wb, sheet_name, subtitle, product, run_date, reviews, st
         kept.append(row)
         added += 1
 
+    # Layout (computed, never hard-coded):
+    #   rows 1-2   product banner / sheet title
+    #   row 4+     summary table (aggregate star counts vs extracted reviews) in columns A:C, then a Total row
+    #   3 blank rows, then the review table header, then the reviews
     ws = wb.create_sheet(sheet_name, idx)
     _banner(ws, product, subtitle)
-    ws["A3"] = (f"Review date range: {_range_text(window)}. Only reviews dated within this range are listed; "
-                "'Date Status' marks reviews whose exact day Flipkart does not show.")
-    ws["A3"].font = Font(italic=True)
-    ws.append(REVIEW_HEADERS)                    # row 4 (row 3 holds the range note)
-    for row in kept:
-        ws.append(row)
+    total_row = 5 + len(stars)
+    head_row = total_row + 3
+    first = head_row + 1
+    last = max(first + len(kept) - 1, first)
+
+    for i, h in enumerate(_SUMMARY_HEADERS):
+        cell = ws.cell(4, 1 + i, h)
+        cell.font, cell.alignment, cell.border = Font(bold=True), CENTER, BOX
+    ws.row_dimensions[4].height = 32
+    for i, s in enumerate(stars):
+        r = 5 + i
+        ws.cell(r, 1, s)
+        ws.cell(r, 2, int(counts[s]) if counts and s in counts else "N/A")
+        ws.cell(r, 3, f"=COUNTIF($B${first}:$B${last},A{r})")
+    ws.cell(total_row, 1, "Total")
+    ws.cell(total_row, 2, f"=SUM(B5:B{total_row - 1})")
+    ws.cell(total_row, 3, f"=SUM(C5:C{total_row - 1})")
+    for c in (1, 2, 3):
+        ws.cell(total_row, c).font = Font(bold=True)
+    ws.cell(5, 5, "This sheet lists only reviews that were individually extracted from Flipkart.").font = Font(italic=True)
+    ws.cell(6, 5, "Aggregate star counts include all dates and ratings without a visible review; "
+                  "no rows are created for them.").font = Font(italic=True)
+
+    for j, h in enumerate(REPORT_HEADERS, 1):
+        cell = ws.cell(head_row, j, h)
+        cell.font, cell.alignment, cell.border = Font(bold=True), CENTER, BOX
+    for i, row in enumerate(kept):
+        for j, src in enumerate(_REPORT_IDX, 1):
+            ws.cell(first + i, j, row[src])
     if removed:
         log.info("[%s] %s: removed %d placeholder 'Rating only' row(s) left by an older version",
                  product, sheet_name, removed)
@@ -371,42 +405,36 @@ def _write_review_sheet(wb, sheet_name, subtitle, product, run_date, reviews, st
             if have[s] > int(counts[s]):
                 log.warning("[%s] %s: %d '%d-star' reviews collected but Flipkart reports only %d ratings",
                             product, sheet_name, have[s], s, counts[s])
-    last = max(ws.max_row, 5)
 
-    # Comparison table: aggregate count (Star Ratings sheet, ALL dates) vs extracted reviews in this sheet.
-    c0 = _SIDE
-    L = [get_column_letter(c0 + i) for i in range(4)]
-    for i, h in enumerate(("Rating", "Aggregate count, all dates (Star Ratings)",
-                           "Individually extracted reviews in date range", "Ratings without an extracted review")):
-        ws.cell(4, c0 + i, h)
-    for i, s in enumerate(stars):
-        r = 5 + i
-        ws.cell(r, c0, s)
-        ws.cell(r, c0 + 1, int(counts[s]) if counts and s in counts else "N/A")
-        ws.cell(r, c0 + 2, f"=COUNTIF($B$5:$B${last},{L[0]}{r})")
-        ws.cell(r, c0 + 3, f'=IF(ISNUMBER({L[1]}{r}),MAX(0,{L[1]}{r}-{L[2]}{r}),"N/A")')
-    tr = 5 + len(stars)
-    ws.cell(tr, c0, "Total")
-    for i in (1, 2, 3):
-        ws.cell(tr, c0 + i, f"=SUM({L[i]}5:{L[i]}{tr - 1})")
-    for i in range(4):
-        ws.cell(tr, c0 + i).font = Font(bold=True)
-        cell = ws.cell(4, c0 + i)
-        cell.font, cell.alignment, cell.border = Font(bold=True), CENTER, BOX
-        ws.column_dimensions[L[i]].width = 26
-    ws.cell(tr + 2, c0, "This sheet lists only reviews that were individually extracted from Flipkart.")
-    ws.cell(tr + 3, c0, "Aggregate star counts include all dates and ratings without a visible review; "
-                        "no rows are created for them.")
-
-    for c in range(1, len(REVIEW_HEADERS) + 1):
-        cell = ws.cell(4, c)
-        cell.font, cell.alignment, cell.border = Font(bold=True), CENTER, BOX
+    for c in range(1, len(REPORT_HEADERS) + 1):
         ws.column_dimensions[get_column_letter(c)].width = 24
-    ws.column_dimensions["B"].width = 10
     ws.column_dimensions["D"].width = 60
-    ws.column_dimensions[get_column_letter(_RANGE_COL)].width = 26
-    ws.freeze_panes = "A5"
+    ws.column_dimensions[get_column_letter(REPORT_HEADERS.index("Possible Date Range") + 1)].width = 26
+    ws.freeze_panes = f"A{first}"
     return added, removed
+
+
+def _existing_rows(ws):
+    """Rows already in a review sheet, returned in the INTERNAL layout (REVIEW_HEADERS).
+
+    Columns are found by header name, so workbooks written by an older layout (16 columns, review table at
+    row 4, 'Scraped At') and by the current layout (13 columns, table below the summary) are both read. Fields
+    the sheet does not have (e.g. Reason, Helpful Votes, Date Status) come back empty - never invented."""
+    head = next((r for r in range(1, min(ws.max_row, 40) + 1) if ws.cell(r, 1).value == "User Name"), None)
+    if head is None:
+        return []
+    pos = {}
+    for c in range(1, ws.max_column + 1):
+        h = ws.cell(head, c).value
+        h = _HEADER_ALIASES.get(h, h)
+        if h in REVIEW_HEADERS and h not in pos:
+            pos[h] = c
+    rows = []
+    for r in range(head + 1, ws.max_row + 1):
+        if ws.cell(r, 1).value is None:
+            continue
+        rows.append([ws.cell(r, pos[h]).value if h in pos else None for h in REVIEW_HEADERS])
+    return rows
 
 
 def _legacy_negative_rows(wb):
@@ -424,8 +452,9 @@ def _write_time_sheet(wb, date_range=None, run_info=None):
     far back it could verify it reached."""
     ws = _sheet(wb, "Time")
     heads = ["Request ID", "Product Name", "Requested Duration", "Duration Unit", "Start Date", "End Date",
-             "Scraping Start Time", "Scraping Completion Time", "Report Generation Time", "Total Extracted Reviews",
-             "Collection Status", "Coverage Status", "Pagination Stop Reason", "Error Details"]
+             "Scraping Start Time", "Scraping Completion Time", "Report Generation Time", "Total Extracted Reviews"]
+    if ws.max_column > len(heads):               # older workbooks had 4 extra status columns - no longer reported
+        ws.delete_cols(len(heads) + 1, ws.max_column - len(heads))
     for i, h in enumerate(heads, 1):
         if ws.cell(1, i).value != h:
             ws.cell(1, i, h)
@@ -437,9 +466,7 @@ def _write_time_sheet(wb, date_range=None, run_info=None):
     ws.append([info.get("request_id") or "N/A", info.get("product_name", ""), info.get("duration", ""),
                info.get("duration_unit", ""), start.isoformat() if start else "N/A", end.isoformat() if end else "N/A",
                info.get("scraping_started_at", stamp), info.get("scraping_completed_at", stamp),
-               info.get("report_generated_at", stamp), info.get("total_extracted_reviews", 0),
-               info.get("collection_status", ""), info.get("coverage") or "N/A",
-               info.get("stop_reason") or "N/A", info.get("error_details", "")])
+               info.get("report_generated_at", stamp), info.get("total_extracted_reviews", 0)])
 
 
 def update_workbook(path, product, run_date, star_counts, overall, keywords, neg_reviews,
