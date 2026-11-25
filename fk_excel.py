@@ -5,6 +5,7 @@ Excel output. One workbook per product, appended per run date.
 Sheets: Star Ratings | Positive Reviews | Negative Reviews | Time
 Layout is computed from the data (no hard-coded row numbers that break when rows shift).
 """
+from product_resolver import short_product_name
 import logging
 import os
 import re
@@ -87,7 +88,7 @@ def _merge_once(ws, rng):
 def _banner(ws, product, subtitle, sub_row=2):
     _merge_once(ws, "A1:B1")
     c = ws["A1"]
-    c.value, c.font, c.fill, c.alignment = f"Product Name: {product}", Font(size=14, bold=True), GREEN, CENTER
+    c.value, c.font, c.fill, c.alignment = f"Product Name: {short_product_name(product)}", Font(size=14, bold=True), GREEN, CENTER
     _merge_once(ws, f"A{sub_row}:B{sub_row}")
     c = ws[f"A{sub_row}"]
     c.value, c.font, c.fill, c.alignment = subtitle, Font(size=13, bold=True), YELLOW, CENTER
@@ -382,9 +383,6 @@ def _write_review_sheet(wb, sheet_name, subtitle, product, run_date, reviews, st
     ws.cell(total_row, 3, f"=SUM(C5:C{total_row - 1})")
     for c in (1, 2, 3):
         ws.cell(total_row, c).font = Font(bold=True)
-    ws.cell(5, 5, "This sheet lists only reviews that were individually extracted from Flipkart.").font = Font(italic=True)
-    ws.cell(6, 5, "Aggregate star counts include all dates and ratings without a visible review; "
-                  "no rows are created for them.").font = Font(italic=True)
 
     for j, h in enumerate(REPORT_HEADERS, 1):
         cell = ws.cell(head_row, j, h)
@@ -463,7 +461,7 @@ def _write_time_sheet(wb, date_range=None, run_info=None):
     start, end = date_range or (None, None)
     info = run_info or {}
     stamp = info.get("scraped_at") or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    ws.append([info.get("request_id") or "N/A", info.get("product_name", ""), info.get("duration", ""),
+    ws.append([info.get("request_id") or "N/A", short_product_name(info.get("product_name", "")), info.get("duration", ""),
                info.get("duration_unit", ""), start.isoformat() if start else "N/A", end.isoformat() if end else "N/A",
                info.get("scraping_started_at", stamp), info.get("scraping_completed_at", stamp),
                info.get("report_generated_at", stamp), info.get("total_extracted_reviews", 0)])

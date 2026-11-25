@@ -316,6 +316,8 @@ for(const e of leaves){
 
     else if(p && norm(p.textContent).length>20){body=p;kind='more';}
 
+    else if(!p && e.parentElement && ELL.test(norm(e.parentElement.textContent).replace(/\s*(read\s+)?more\s*$/i,''))){body=e.parentElement;kind='more';}
+
   } else if(t.length>12 && ELL.test(t)){
 
     body=e;kind='ellipsis';
@@ -338,7 +340,7 @@ for(const e of leaves){
 
   seen.add(body);
 
-  const bt=norm(body.textContent).replace(/(\.\.\.|\u2026)\s*$/,'').trim();
+  const bt=norm(body.textContent).replace(/\s*(read\s+)?more\s*$/i,'').replace(/(\.\.\.|\u2026)\s*$/,'').trim();
 
   const id=String(nextId++);
 
@@ -360,7 +362,7 @@ const card=document.querySelector('[data-fk-card="'+arguments[0]+'"]'); if(!card
 
 const more=[...card.querySelectorAll('span,div,a')].find(x=>x.children.length===0&&/^(read\s+)?more$/i.test((x.textContent||'').trim()));
 
-if(!more) return false; more.scrollIntoView({block:'center'}); more.click(); return true;"""
+if(!more) return false; more.setAttribute('data-fk-more',arguments[0]); more.scrollIntoView({block:'center'}); more.click(); return true;"""
 
 
 
@@ -376,19 +378,33 @@ return {text:(b.innerText||b.textContent||'').replace(/\s+/g,' ').trim(), more:!
 
 
 
-_CLICK_IMAGE_JS = r"""
+_TAG_MEDIA_JS = r"""
 
-const card=document.querySelector('[data-fk-card="'+arguments[0]+'"]'); if(!card) return false;
+const id=arguments[0], card=document.querySelector('[data-fk-card="'+id+'"]'); if(!card) return 0;
 
-const imgs=[...card.querySelectorAll('img')].filter(i=>{
+const STATIC=/(linchpin|static-assets|sprite|\.svg(\?|$))/i, PHOTO=/(rukminim|\/image\/|\/reviews?\/|\/media\/)/i;
 
-  const w=i.offsetWidth||parseInt(i.getAttribute('width')||'0')||0, h=i.offsetHeight||parseInt(i.getAttribute('height')||'0')||0;
+const found=[];
 
-  return (w>=30&&h>=30)||/rukminim|flixcart|flipkart/i.test(i.currentSrc||i.src||'');});
+card.querySelectorAll('img,video,[style*="background-image"]').forEach(el=>{
 
-if(!imgs.length) return false;
+  const src=(el.currentSrc||el.src||el.getAttribute('poster')||el.getAttribute('style')||'');
 
-imgs[0].scrollIntoView({block:'center'}); imgs[0].click(); return true;"""
+  const r=el.getBoundingClientRect();
+
+  const w=r.width||parseInt(el.getAttribute('width')||'0')||0, h=r.height||parseInt(el.getAttribute('height')||'0')||0;
+
+  const photo=PHOTO.test(src)&&!STATIC.test(src), big=w>=48&&h>=48&&!STATIC.test(src);
+
+  if(photo||big) found.push({el:el,score:(photo?1e6:0)+w*h});
+
+});
+
+found.sort((a,b)=>b.score-a.score);
+
+found.slice(0,3).forEach((f,i)=>f.el.setAttribute('data-fk-media',id+'-'+i));
+
+return Math.min(found.length,3);"""
 
 
 
@@ -412,7 +428,11 @@ const id=arguments[0], prefix=arguments[1], title=arguments[2]||'', clickMore=!!
 
 const card=document.querySelector('[data-fk-card="'+id+'"]');
 
-const outside=e=>!(card&&card.contains(e));
+const fx=e=>{for(let n=e;n&&n.nodeType===1;n=n.parentElement){let s=null;try{s=getComputedStyle(n);}catch(_){} if((s&&s.position==='fixed')||n.getAttribute('role')==='dialog'||n.getAttribute('aria-modal')==='true')return n;}return null;};
+
+const inOv=e=>{const f=fx(e);return !!f&&!(card&&f.contains(card));};
+
+const outside=e=>!(card&&card.contains(e))||inOv(e);
 
 const shown=e=>!!(e.offsetWidth||e.offsetHeight||e.getClientRects().length);
 
@@ -430,7 +450,7 @@ if(clickMore){
 
     ||all.find(e=>e.children.length===0&&norm(e.textContent)==='more'&&holders.some(h=>h.contains(e)||(h.parentElement&&h.parentElement.contains(e))));
 
-  if(tgt){tgt.click();clicked=true;}
+  if(tgt){tgt.setAttribute('data-fk-readmore','1');tgt.click();clicked=true;}
 
 }
 
@@ -461,6 +481,102 @@ txt=txt.replace(/\s*(\.\.\.|\u2026)*\s*(read\s+)?more\s*$/i,'').replace(/\s*(rea
 return {found:true,clicked:clicked,text:txt};"""
 
 
+
+# Find the words "Read more" in the open viewer by the position of the TEXT itself (works when the words are a bare
+
+# text node inside the review line, or a span, or inside the review card). Tags the element under that spot.
+
+_FIND_READMORE_JS = r"""
+
+const norm=t=>(t||'').replace(/\s+/g,' ').trim();
+
+const id=arguments[0], prefix=arguments[1]||'';
+
+const card=document.querySelector('[data-fk-card="'+id+'"]');
+
+const shown=e=>!!(e.offsetWidth||e.offsetHeight||e.getClientRects().length);
+
+const fx=e=>{for(let n=e;n&&n.nodeType===1;n=n.parentElement){let s=null;try{s=getComputedStyle(n);}catch(_){} if((s&&s.position==='fixed')||n.getAttribute('role')==='dialog'||n.getAttribute('aria-modal')==='true')return n;}return null;};
+
+const inOv=e=>{const f=fx(e);return !!f&&!(card&&f.contains(card));};
+
+document.querySelectorAll('[data-fk-readmore]').forEach(x=>x.removeAttribute('data-fk-readmore'));
+
+const w=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT);
+
+let best=null;
+
+while(w.nextNode()){
+
+  const n=w.currentNode, v=n.nodeValue||'';
+
+  const m=/read\s*more\s*$/i.exec(v); if(!m) continue;
+
+  if(m.index>0 && !/[.\u2026\s]\s*$/.test(v.slice(0,m.index))) continue;
+
+  const el=n.parentElement; if(!el||/^(script|style|noscript)$/i.test(el.tagName)||!shown(el)) continue;
+
+  if(card&&card.contains(el)&&!inOv(el)) continue;
+
+  const r=document.createRange(); r.setStart(n,m.index); r.setEnd(n,m.index+m[0].length);
+
+  const b=r.getBoundingClientRect(); if(!b.width||!b.height) continue;
+
+  let score=inOv(el)?2:0, a=el;
+
+  for(let i=0;i<6&&a;i++,a=a.parentElement){ if(norm(a.textContent).includes(prefix)){score+=3;break;} }
+
+  if(!best||score>best.score) best={score:score,el:el,b:b};
+
+}
+
+if(!best) return {found:false};
+
+const cx=best.b.left+best.b.width/2, cy=best.b.top+best.b.height/2;
+
+const t=document.elementFromPoint(cx,cy)||best.el;
+
+const tr=t.getBoundingClientRect();
+
+t.setAttribute('data-fk-readmore','1');
+
+return {found:true,dx:Math.round(cx-(tr.left+tr.width/2)),dy:Math.round(cy-(tr.top+tr.height/2)),tag:t.tagName};"""
+
+# Last resort: send the whole mouse-event sequence to the tagged element at the spot where the words are.
+
+_DISPATCH_CLICK_JS = r"""
+
+const e=document.querySelector('[data-fk-readmore="1"]'); if(!e) return false;
+
+const r=e.getBoundingClientRect(), x=r.left+r.width/2+(arguments[0]||0), y=r.top+r.height/2+(arguments[1]||0);
+
+const fire=(T,t)=>{const o={bubbles:true,cancelable:true,view:window,clientX:x,clientY:y,button:0};
+
+  try{e.dispatchEvent(new T(t,o));}catch(_){e.dispatchEvent(new MouseEvent(t,o));}};
+
+fire(window.PointerEvent||MouseEvent,'pointerdown');fire(MouseEvent,'mousedown');
+
+fire(window.PointerEvent||MouseEvent,'pointerup');fire(MouseEvent,'mouseup');fire(MouseEvent,'click');
+
+return true;"""
+
+# For the log when a viewer cannot be expanded: the HTML around the review text.
+
+_OVERLAY_DEBUG_JS = r"""
+
+const norm=t=>(t||'').replace(/\s+/g,' ').trim(), prefix=arguments[0]||'';
+
+const shown=e=>!!(e.offsetWidth||e.offsetHeight||e.getClientRects().length);
+
+const els=[...document.querySelectorAll('span,div,p')].filter(e=>shown(e)&&norm(e.textContent).includes(prefix)&&!e.closest('[data-fk-card]'))
+
+  .sort((a,b)=>norm(a.textContent).length-norm(b.textContent).length);
+
+if(!els.length) return 'no visible element outside the review list holds the review text';
+
+const p=els[0].parentElement||els[0];
+
+return (p.outerHTML||'').replace(/\s+/g,' ').slice(0,700);"""
 
 # 'Complete Review' side panel (topic lists)
 
@@ -500,9 +616,13 @@ const shown=e=>!!(e.offsetWidth||e.offsetHeight||e.getClientRects().length);
 
 if([...document.querySelectorAll('span,div,p')].some(e=>e.children.length===0&&/^complete review$/i.test(norm(e.textContent))&&shown(e))) return 'panel';
 
-const out=[...document.querySelectorAll('span,div,p')].some(e=>e.children.length<=3&&shown(e)&&!(card&&card.contains(e))
+const fx=e=>{for(let n=e;n&&n.nodeType===1;n=n.parentElement){let s=null;try{s=getComputedStyle(n);}catch(_){} if((s&&s.position==='fixed')||n.getAttribute('role')==='dialog'||n.getAttribute('aria-modal')==='true')return n;}return null;};
 
-     &&norm(e.textContent).includes(prefix)&&!e.closest('[data-fk-card]'));
+const inOv=e=>{const f=fx(e);return !!f&&!(card&&f.contains(card));};
+
+const out=[...document.querySelectorAll('span,div,p')].some(e=>e.children.length<=3&&shown(e)&&norm(e.textContent).includes(prefix)
+
+     &&((!(card&&card.contains(e))&&!e.closest('[data-fk-card]'))||inOv(e)));
 
 return out?'viewer':'';"""
 
@@ -898,6 +1018,146 @@ class LivePage:
 
 
 
+    def _click_css(self, css, dx=None, dy=None):
+
+        """Click like a person does: scroll to the element, move the mouse onto it and click.
+
+        With dx/dy the mouse lands that many pixels from the element's centre (the exact spot of the words
+
+        'Read more'). Falls back to a script click if the real click cannot reach it."""
+
+        try:
+
+            from selenium.webdriver.common.action_chains import ActionChains
+
+            if dx is None:
+
+                self.driver.execute_script(
+
+                    "const e=document.querySelector(arguments[0]); if(e) e.scrollIntoView({block:'center'});", css)
+
+                time.sleep(0.2)
+
+            el = self.driver.find_element(By.CSS_SELECTOR, css)
+
+            chain = ActionChains(self.driver)
+
+            if dx is None:
+
+                chain.move_to_element(el)
+
+            else:
+
+                chain.move_to_element_with_offset(el, int(dx), int(dy or 0))
+
+            chain.pause(0.1).click().perform()
+
+            return True
+
+        except WebDriverException:
+
+            try:
+
+                return bool(self.driver.execute_script(
+
+                    "const e=document.querySelector(arguments[0]); if(!e) return false; e.click(); return true;", css))
+
+            except WebDriverException:
+
+                return False
+
+    def _debug_viewer(self, rid, prefix):
+
+        """The viewer is open but 'Read more' did not expand it: log the viewer's HTML and save a screenshot once."""
+
+        try:
+
+            log.info("review %s: viewer open but 'Read more' did not expand it. Viewer HTML: %s",
+
+                     rid, self._js(_OVERLAY_DEBUG_JS, prefix))
+
+        except WebDriverException:
+
+            pass
+
+        if self.diag_dir and not getattr(self, "_viewer_snap", False):
+
+            self._viewer_snap = True
+
+            try:
+
+                self.snapshot("viewer_read_more_failed")
+
+            except Exception:
+
+                pass
+
+    def _read_overlay_full(self, rid, prefix, title, vis):
+
+        """Photo viewer is open: wait for its 'Read more', click it where the words are (real mouse click, then the
+
+        full mouse-event sequence, then a plain element click) and wait for the longer text after each try."""
+
+        def now():
+
+            return ((self._js(_OVERLAY_READ_JS, rid, prefix, title, False) or {}).get("text", "")) or ""
+
+        wait = float(self.settings.get("expand_wait_seconds", 3))
+
+        found_any = False
+
+        for attempt in range(3):
+
+            info, end = {}, time.time() + (max(wait, 3.0) if attempt == 0 else 1.0)
+
+            while time.time() < end:                     # the link can appear a moment after the viewer opens
+
+                info = self._js(_FIND_READMORE_JS, rid, prefix) or {}
+
+                if info.get("found"):
+
+                    break
+
+                time.sleep(0.25)
+
+            if not info.get("found"):
+
+                break                                    # no 'Read more': the viewer already shows the whole text
+
+            found_any = True
+
+            if attempt == 0:
+
+                self._click_css('[data-fk-readmore="1"]', info.get("dx", 0), info.get("dy", 0))
+
+            elif attempt == 1:
+
+                self._js(_DISPATCH_CLICK_JS, info.get("dx", 0), info.get("dy", 0))
+
+            else:
+
+                self._js(_OVERLAY_READ_JS, rid, prefix, title, True)
+
+            end = time.time() + 2.0
+
+            while time.time() < end:
+
+                text = now()
+
+                if self._full_text_ok(text, prefix, vis):
+
+                    return text
+
+                time.sleep(0.25)
+
+        text = now()
+
+        if found_any and not self._full_text_ok(text, prefix, vis):
+
+            self._debug_viewer(rid, prefix)
+
+        return text
+
     def _full_text_ok(self, full, prefix, vis):
 
         full = (full or "").strip()
@@ -986,7 +1246,9 @@ class LivePage:
 
                     EXPAND_STATS["not_expanded"] += 1
 
-                log.info("review %s could not be expanded; keeping the visible text", rid)
+                log.info("review %s could not be expanded (%s); keeping the visible text",
+
+                         rid, "; ".join(getattr(self, "_last_trace", [])) or "no step ran")
 
             # safety: opening a viewer must never cost us the list we already loaded
 
@@ -1040,35 +1302,47 @@ class LivePage:
 
 
 
-        # 1) the inline 'more' link
+        trace = self._last_trace = []
+
+        # 1) the inline 'more' link (script click, then a real mouse click)
 
         if kind == "more" and self._js(_INLINE_CLICK_JS, rid):
 
-            time.sleep(0.6)
+            for attempt in range(2):
 
-            st = self._js(_BODY_STATE_JS, rid)
+                time.sleep(0.6)
 
-            if st and self._full_text_ok(st["text"], prefix, vis) and not st["more"]:
+                st = self._js(_BODY_STATE_JS, rid)
 
-                return st["text"], "inline"
+                if st and self._full_text_ok(st["text"], prefix, vis) and not st["more"]:
 
+                    return st["text"], "inline"
 
+                if attempt == 0:
 
-        # 2) a photo of the review -> photo viewer with the text and a 'Read more' link
+                    self._click_css('[data-fk-more="%s"]' % rid)
 
-        if self._js(_CLICK_IMAGE_JS, rid):
+            trace.append("'more' link did nothing")
+
+        # 2) the review's photo -> photo viewer with the text and a 'Read more' link. Only real review photos are
+
+        #    clicked (never the star / thumbs / verified icons) and every candidate is tried in turn.
+
+        n_media = int(self._js(_TAG_MEDIA_JS, rid) or 0)
+
+        trace.append("photos found: %d" % n_media)
+
+        for i in range(n_media):
+
+            if not self._click_css('[data-fk-media="%s-%d"]' % (rid, i)):
+
+                trace.append("photo %d not clickable" % (i + 1))
+
+                continue
 
             if poll(lambda: self._overlay_state(rid, prefix), wait):
 
-                res = self._js(_OVERLAY_READ_JS, rid, prefix, title, True) or {}
-
-                if res.get("clicked"):
-
-                    time.sleep(0.6)
-
-                    res = self._js(_OVERLAY_READ_JS, rid, prefix, title, False) or res
-
-                full = res.get("text", "")
+                full = self._read_overlay_full(rid, prefix, title, vis)
 
                 self._close_overlay(rid, prefix, url_before)
 
@@ -1076,15 +1350,17 @@ class LivePage:
 
                     return full, "photo_viewer"
 
+                trace.append("photo viewer opened but text stayed short")
+
             else:
 
                 self._close_overlay(rid, prefix, url_before)
 
-
+                trace.append("photo %d opened no viewer" % (i + 1))
 
         # 3) topic-list card or plain text: click the text -> 'Complete Review' panel
 
-        if self._js(_CLICK_BODY_JS, rid):
+        if self._click_css('[data-fk-body="%s"]' % rid):
 
             state = poll(lambda: self._overlay_state(rid, prefix), wait)
 
@@ -1100,17 +1376,11 @@ class LivePage:
 
                     return full, "complete_review_panel"
 
+                trace.append("review panel text stayed short")
+
             elif state == "viewer":
 
-                res = self._js(_OVERLAY_READ_JS, rid, prefix, title, True) or {}
-
-                if res.get("clicked"):
-
-                    time.sleep(0.6)
-
-                    res = self._js(_OVERLAY_READ_JS, rid, prefix, title, False) or res
-
-                full = res.get("text", "")
+                full = self._read_overlay_full(rid, prefix, title, vis)
 
                 self._close_overlay(rid, prefix, url_before)
 
@@ -1118,9 +1388,13 @@ class LivePage:
 
                     return full, "text_click"
 
+                trace.append("text-click viewer text stayed short")
+
             else:
 
                 self._close_overlay(rid, prefix, url_before)
+
+                trace.append("clicking the text opened nothing")
 
         return "", ""
 
