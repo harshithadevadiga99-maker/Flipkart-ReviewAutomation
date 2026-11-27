@@ -22,7 +22,7 @@ import os
 import re
 import time
 from pathlib import Path
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlsplit
 from urllib.request import Request, urlopen
 
@@ -64,6 +64,9 @@ def _call(payload, attempts=4):
             req = Request(url, data=body, headers={"Content-Type": "application/json"}, method="POST")
             with urlopen(req, timeout=180) as response:
                 result = json.loads(response.read().decode("utf-8"))
+        except HTTPError as exc:
+            last = RuntimeError(f"Drive storage could not be reached: HTTP {exc.code}")
+            continue
         except (URLError, TimeoutError, OSError, ValueError) as exc:
             last = RuntimeError(f"Drive storage could not be reached: {type(exc).__name__}")
             continue
