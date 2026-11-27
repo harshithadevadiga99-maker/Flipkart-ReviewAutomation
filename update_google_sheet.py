@@ -4,7 +4,7 @@ import os
 import re
 import sys
 import time
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from fk_common import BASE_DIR
@@ -77,6 +77,14 @@ def main():
             with urlopen(req, timeout=60) as response:
                 response_body = response.read().decode("utf-8")
                 status_code = response.status
+        except HTTPError as exc:
+            # Show the real HTTP code (401/403/404/...) and the first words of Google's answer (never the secret).
+            try:
+                snippet = " ".join(exc.read().decode("utf-8", "replace").split())[:120]
+            except Exception:
+                snippet = ""
+            last_error = RuntimeError(f"Google Sheets callback could not be reached: HTTP {exc.code} {snippet}".strip())
+            continue
         except (URLError, TimeoutError, OSError) as exc:
             last_error = RuntimeError(f"Google Sheets callback could not be reached: {type(exc).__name__}")
             continue
