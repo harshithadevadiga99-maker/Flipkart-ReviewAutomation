@@ -350,6 +350,31 @@ def _same_review(a, b):
     return (not generic) and a.get("Date") == b.get("Date") and a.get("Date") not in (None, "", "N/A")
 
 
+def _is_cut(text, truncated=False):
+    """True when a review text is still cut off ('...' at the end, or its 'more' link was never opened)."""
+    return bool(truncated) or bool(re.search(r"(\.\.\.|…)\s*$", str(text or "")))
+
+
+def _adopt_full_text(host, topic):
+    """A rated Overall card is still cut off ('more' and the photo viewer both failed, e.g. no photo).
+    If the same review in a topic list (opened through its 'Complete Review' panel) holds a longer, uncut text
+    that starts the same way, use that text. Returns True when the host was completed."""
+    if not _is_cut(host.get("Review Description"), host.get("Truncated")):
+        return False
+    full = str(topic.get("Review Description") or "")
+    if full in ("", "N/A"):                      # topic card without a separate headline: the excerpt is the body
+        full = str(topic.get("Short Review") or "")
+    if full in ("", "N/A") or _is_cut(full, topic.get("Truncated")):
+        return False
+    cut = _flat(host.get("Review Description"))
+    if len(_flat(full)) <= len(cut) or not _flat(full).startswith(cut[:20]):
+        return False
+    host["Review Description"] = full
+    host["Truncated"] = False
+    host["Full Text Source"] = "Topic list (Complete Review panel)"
+    return True
+
+
 def _section_label(origins):
     """{('Bass','MOST_RECENT'), ...} -> 'Bass: Latest, Most Helpful | Overall: Latest'."""
     by_topic = {}
@@ -363,12 +388,13 @@ def _merge_sections(by_key, origins):
 
     * rated cards (Overall list) are the reference records;
     * topic excerpts that match a rated card are folded into it (they inherit its star rating);
+      when the rated card is still cut off, the topic card's full text completes it;
     * remaining excerpts of the same review from different topics are folded together;
     * what is left has no star rating anywhere on the page: it is KEPT, with a sentiment inferred from
       its wording and a 'Rating Source' flag (nothing is dropped).
     Returns (reviews, stats)."""
     stats = {"topic_cards": 0, "matched_to_rated": 0, "merged_topic_cards": 0,
-             "unrated_kept": 0, "unrated_skipped": 0}
+             "unrated_kept": 0, "unrated_skipped": 0, "full_text_from_topic": 0}
     rated = [r for r in by_key.values() if _is_rated(r)]
     unrated = [r for r in by_key.values() if not _is_rated(r)]
     stats["topic_cards"] = len(unrated)
@@ -380,6 +406,8 @@ def _merge_sections(by_key, origins):
         if host is not None:
             sec[id(host)] |= sec[id(u)]
             stats["matched_to_rated"] += 1
+            if _adopt_full_text(host, u):
+                stats["full_text_from_topic"] += 1
         else:
             leftovers.append(u)
 
@@ -803,8 +831,13 @@ def scrape_product(page, name, url, settings, selectors, today=None):
                   f"({m.get('matched_to_rated', 0)} matched to a rated review, "
                   f"{m.get('unrated_kept', 0)} kept with sentiment inferred from text)")
         data["reviews"] = reviews
+        # v8: how many cut-off Overall reviews were completed from topic lists, and how many stay cut off
+        still_cut = sum(1 for r in reviews if _is_cut(r.get("Review Description"), r.get("Truncated")))
+        filled = info.get("topic_merge", {}).get("full_text_from_topic", 0)
+        res["notes"].append(f"cut-off reviews completed from topic lists: {filled}; "
+                            f"still cut off (no working 'more'/photo and not in any topic list): {still_cut}")
         try:
-            from fk_browser import EXPAND_STATS
+            from fk_browser import EXPAND_STATS, PANEL_STATS
             if EXPAND_STATS.get("expanded") or EXPAND_STATS.get("not_expanded"):
                 res["notes"].append(
                     f"cut-off reviews opened for the full text: {EXPAND_STATS['expanded']} "
@@ -812,6 +845,11 @@ def scrape_product(page, name, url, settings, selectors, today=None):
                     f"{EXPAND_STATS['complete_review_panel']}, 'more' link {EXPAND_STATS['inline']}, "
                     f"text click {EXPAND_STATS['text_click']}); could not be opened, kept partial: "
                     f"{EXPAND_STATS['not_expanded']}")
+            if PANEL_STATS.get("read") or PANEL_STATS.get("failed"):
+                res["notes"].append(
+                    f"topic-list cards read through the 'Complete Review' panel: {PANEL_STATS['read']} "
+                    f"(star rating not readable: {PANEL_STATS.get('no_stars', 0)}); "
+                    f"panel could not be read: {PANEL_STATS['failed']}")
         except Exception:
             pass
 
