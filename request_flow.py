@@ -93,10 +93,12 @@ class ReportRequest:
             expected_start, _ = calculate_date_range(duration, get("DURATION_UNIT"), end)
             if start != expected_start:
                 raise ValueError("START_DATE does not match DURATION, DURATION_UNIT, and END_DATE")
-                append = get("APPEND").lower() in ("true", "1", "yes")
+        # Append is ON only for an explicit true/1/yes; missing or anything else = OFF (safe default).
+        append = get("APPEND").lower() in ("true", "1", "yes")
         return cls(rid, url, duration, get("DURATION_UNIT").lower(), email, start, end, append)
 
     def as_dict(self):
         return {"request_id": self.request_id, "product_url": self.product_url, "duration": self.duration,
                 "duration_unit": self.duration_unit, "recipient_email": self.recipient_email,
-                "start_date": self.start_date.isoformat(), "end_date": self.end_date.isoformat()}
+                "start_date": self.start_date.isoformat(), "end_date": self.end_date.isoformat(),
+                "append": self.append}
