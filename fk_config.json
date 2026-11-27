@@ -1,5 +1,5 @@
 {
-  "_comment": "Edit this file when Flipkart changes its page. Reviews use the page text structure and cursor-based infinite scroll; numbered ?page=N URLs are not used. Collection stops at the verified date boundary or is reported Partial if scrolling cannot establish coverage. FULL COVERAGE: all topics x all sorts are visited; only reviews inside the requested date range are kept.",
+  "_comment": "Edit this file when Flipkart changes its page. Reviews use the page text structure and cursor-based infinite scroll; numbered ?page=N URLs are not used. Collection stops at the verified date boundary or is reported Partial if scrolling cannot establish coverage. FULL COVERAGE: all topics x all sorts are visited; only reviews inside the requested date range are kept. v8: every star-less topic-list card is clicked and read through its Complete Review panel; Overall (starred) reviews use 'more' / photo viewer and are completed from topic lists when those fail.",
   "settings": {
     "urls_csv": "Flipkart_Hearables_URLs.csv",
     "output_dir": "reports",
@@ -32,7 +32,7 @@
     "start_date": "",
     "end_date": "",
     "date_stop_streak": 10,
-    "include_uncertain_dates": false,
+    "include_uncertain_dates": true,
     "login_required": false,
     "login_url": "https://www.flipkart.com/account/login",
     "login_verify_url": "https://www.flipkart.com/account/?rd=0&link=home_account",
@@ -74,7 +74,12 @@
     "expand_truncated_reviews": true,
     "expand_max_per_round": 40,
     "expand_round_seconds": 90,
-    "expand_wait_seconds": 5
+    "expand_wait_seconds": 5,
+    "panel_enrich_cards": true,
+    "panel_all_cards": false,
+    "panel_click_rated": false,
+    "panel_max_per_round": 60,
+    "panel_round_seconds": 240
   },
   "selectors": {
     "review_block": [
