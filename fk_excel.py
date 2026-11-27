@@ -322,7 +322,7 @@ def _key(row):
 
 
 def _write_review_sheet(wb, sheet_name, subtitle, product, run_date, reviews, stars, counts, legacy_rows=(),
-                        window=None, scraped_at=None, include_uncertain=False, stats=None):
+                        window=None, scraped_at=None, include_uncertain=False, stats=None, block_title=None):
     """One sheet of reviews for the given star values.
 
     * only genuine, individually extracted reviews are written; they accumulate across runs
@@ -397,6 +397,10 @@ def _write_review_sheet(wb, sheet_name, subtitle, product, run_date, reviews, st
     #   3 blank rows, then the review table header, then the reviews
     ws = wb.create_sheet(sheet_name, idx)
     _banner(ws, product, subtitle)
+    if block_title:                                   # same highlighted label that every appended block carries
+        ws.merge_cells(start_row=3, start_column=1, end_row=3, end_column=5)
+        t = ws.cell(3, 1, block_title)
+        t.font, t.fill, t.alignment = Font(size=13, bold=True), YELLOW, CENTER
     total_row = 5 + len(stars)
     head_row = total_row + 3
     first = head_row + 1
@@ -605,16 +609,17 @@ def update_workbook(path, product, run_date, star_counts, overall, keywords, neg
                                                       star_counts, run_date, scraped_at, date_range, include_uncertain)
             return
         legacy = _legacy_negative_rows(wb)
+        block_title = f"Updated \u2013 {_period_text(run_info, date_range)} \u2013 {scraped_at[:16]}"
         extra = {}
         stats["neg_added"], stats["neg_placeholders_removed"] = _write_review_sheet(
             wb, NEGATIVE_SHEET, "Negative Reviews (1-3 star)", product, run_date, neg_reviews,
-            (3, 2, 1), star_counts, legacy, date_range, scraped_at, include_uncertain, extra)
+            (3, 2, 1), star_counts, legacy, date_range, scraped_at, include_uncertain, extra, block_title)
         for k, v in extra.items():
             stats[k] += v
         extra = {}
         stats["pos_added"], stats["pos_placeholders_removed"] = _write_review_sheet(
             wb, POSITIVE_SHEET, "Positive Reviews (4-5 star)", product, run_date, pos_reviews or [],
-            (5, 4), star_counts, (), date_range, scraped_at, include_uncertain, extra)
+            (5, 4), star_counts, (), date_range, scraped_at, include_uncertain, extra, block_title)
         for k, v in extra.items():
             stats[k] += v
 
