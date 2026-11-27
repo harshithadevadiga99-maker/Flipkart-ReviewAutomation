@@ -1,4 +1,4 @@
-# v6
+# v7
 """
 Pure parsing logic (no Selenium) so it can be unit-tested offline.
 
@@ -69,14 +69,13 @@ _ABS_DATE_TEXT = (
     r"\d{1,2}\s+[A-Za-z]{3,9}\.?,?\s+\d{4}|"
     r"[A-Za-z]{3,9},?\s+\d{4}"
 )
-_DATE_SEARCH = re.compile(
-    rf"\b(\d+\s+(?:day|week|month|year)s?\s+ago|today|yesterday)\b|\b({_ABS_DATE_TEXT})\b",
-    re.I,
+# v7 FIX: relative dates also include 'just now', 'N seconds/minutes/hours ago' and 'a/an <unit> ago'.
+# Before, a review written today ("5 hours ago") was not recognised as having a date and was dropped.
+_REL_TEXT = (
+    r"(?:just\s+now|(?:\d+|an?)\s+(?:second|minute|hour|day|week|month|year)s?\s+ago|today|yesterday)"
 )
-_DATE_LEAF = re.compile(
-    rf"^[\W_]*(\d+\s+(?:day|week|month|year)s?\s+ago|today|yesterday|{_ABS_DATE_TEXT})[\W_]*$",
-    re.I,
-)
+_DATE_SEARCH = re.compile(rf"\b({_REL_TEXT})\b|\b({_ABS_DATE_TEXT})\b", re.I)
+_DATE_LEAF = re.compile(rf"^[\W_]*({_REL_TEXT}|{_ABS_DATE_TEXT})[\W_]*$", re.I)
 
 
 def normalize_date(raw, now=None):
@@ -86,14 +85,17 @@ def normalize_date(raw, now=None):
     if not m:
         return (raw or "").strip() or "N/A"
     txt = (m.group(1) or m.group(2)).strip()
-    low = txt.lower()
-    if low == "today":
+    low = re.sub(r"\s+", " ", txt.lower())
+    if low in ("today", "just now"):
         return now.strftime("%b %d, %Y")
     if low == "yesterday":
         return (now - timedelta(days=1)).strftime("%b %d, %Y")
-    rel = re.match(r"(\d+)\s+(day|week|month|year)", low)
+    rel = re.match(r"(\d+|an?)\s+(second|minute|hour|day|week|month|year)", low)
     if rel:
-        n, unit = int(rel.group(1)), rel.group(2)
+        n = 1 if rel.group(1) in ("a", "an") else int(rel.group(1))
+        unit = rel.group(2)
+        if unit in ("second", "minute", "hour"):
+            return now.strftime("%b %d, %Y")
         days = {"day": 1, "week": 7, "month": 30, "year": 365}[unit] * n
         return (now - timedelta(days=days)).strftime("%b %d, %Y")
     return txt
@@ -107,7 +109,7 @@ def normalize_date(raw, now=None):
 # Everything else is a RANGE of possible days; we keep that range (earliest..latest) instead of
 # inventing a single day, and flag the record as uncertain.
 # --------------------------------------------------------------------------- #
-_REL = re.compile(r"\b(\d+|an?)\s+(minute|hour|day|week|month|year)s?\s+ago\b", re.I)
+_REL = re.compile(r"\b(\d+|an?)\s+(second|minute|hour|day|week|month|year)s?\s+ago\b", re.I)
 _MONTH_YEAR = re.compile(r"^([A-Za-z]{3,9})\.?,?\s+(\d{4})$")
 _FULL_DATE_FORMATS = ("%b %d, %Y", "%B %d, %Y", "%b %d %Y", "%B %d %Y", "%d %b %Y", "%d %B %Y",
                       "%d %b, %Y", "%Y-%m-%d", "%d/%m/%Y")
@@ -162,7 +164,7 @@ def parse_review_date(raw, today=None):
         return out
 
     low = core.lower()
-    if low == "today":
+    if low in ("today", "just now"):
         return day(today, "relative")
     if low == "yesterday":
         return day(today - timedelta(days=1), "relative")
@@ -175,7 +177,7 @@ def parse_review_date(raw, today=None):
     if m:
         n = 1 if m.group(1).lower() in ("a", "an") else int(m.group(1))
         unit = m.group(2).lower()
-        if unit in ("minute", "hour"):
+        if unit in ("second", "minute", "hour"):
             return day(today, "relative")
         if unit == "day":
             return day(today - timedelta(days=n), "relative")
@@ -443,7 +445,7 @@ def _tier2(soup, today=None):
 # --------------------------------------------------------------------------- #
 _TOPIC_DATE_LEAF = re.compile(
     rf"^[\W_]*(?:(?:certified buyer|verified purchase)[\W_]*)?"
-    rf"(\d+\s+(?:day|week|month|year)s?\s+ago|today|yesterday|{_ABS_DATE_TEXT})[\W_]*$",
+    rf"({_REL_TEXT}|{_ABS_DATE_TEXT})[\W_]*$",
     re.I,
 )
 _ONLY_VERIFIED = re.compile(r"^[\W_]*(certified buyer|verified purchase)[\W_]*$", re.I)
@@ -542,6 +544,15 @@ def parse_reviews_detailed(html, selectors, today=None):
                      ("tier3_topic", lambda: _tier3(soup, today))):
         recs, detected = fn()
         if _healthy(recs):
+            if tier == "tier2":
+                # v7 safety net: in a mixed list (some cards with stars, some topic cards without) tier2 only
+                # sees the starred cards. Add the star-less cards that tier3 can read, so they are not lost.
+                r3, d3 = _tier3(soup, today)
+                if d3 > detected:
+                    have = {(r["User Name"], r["Date"]) for r in recs}
+                    recs = recs + [r for r in r3
+                                   if r.get("Ratings") == NA and (r["User Name"], r["Date"]) not in have]
+                    detected = max(detected, d3)
             good = [r for r in recs if is_valid_review(r)]
             return {"reviews": good, "detected": detected, "invalid": len(recs) - len(good), "tier": tier}
     return {"reviews": [], "detected": 0, "invalid": 0, "tier": "none"}
