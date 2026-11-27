@@ -32,6 +32,11 @@ on:
         description: Inclusive end date (YYYY-MM-DD)
         required: true
         type: string
+      APPEND:
+        description: Append to the previous stored report (true/false)
+        required: false
+        default: "false"
+        type: string
 
 permissions:
   contents: read
@@ -53,6 +58,7 @@ jobs:
       DURATION_UNIT: ${{ inputs.DURATION_UNIT }}
       START_DATE: ${{ inputs.START_DATE }}
       END_DATE: ${{ inputs.END_DATE }}
+      APPEND: ${{ inputs.APPEND }}
       FKART_LOGIN_ID: ${{ secrets.FKART_LOGIN_ID }}
       FKART_PASSWORD: ${{ secrets.FKART_PASSWORD }}
       FKART_EMAIL: ${{ secrets.FKART_EMAIL }}
