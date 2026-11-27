@@ -144,7 +144,8 @@ def process_product(driver, url, name, settings, selectors, dirs):
                                          "total_extracted_reviews": len(reviews),
                                          "collection_status": res["status"],
                                          "error_details": res.get("failure_reason", "")},
-            include_uncertain=settings.get("include_uncertain_dates", True))
+            include_uncertain=settings.get("include_uncertain_dates", True),
+            append_mode=bool(settings.get("append_mode")))
         res["negative_rows_written"] = added
         res["positive_rows_written"] = stats.get("pos_added", 0)
         removed = stats.get("neg_placeholders_removed", 0) + stats.get("pos_placeholders_removed", 0)

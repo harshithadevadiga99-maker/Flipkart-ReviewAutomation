@@ -12,6 +12,7 @@ import time
 from fk_common import BASE_DIR, load_config, resolve_dir, setup_logging
 from fk_excel import safe_filename
 from request_flow import ReportRequest
+import drive_store
 
 log = setup_logging()
 
@@ -120,6 +121,35 @@ def run(data):
         resolved_name, resolved_url = resolve_product(driver, request.product_url,
                                                        settings.get("page_wait_seconds", 25))
         log.info("Request %s resolved to product %s", request.request_id, resolved_name)
+        workbook = out / safe_filename(resolved_name)
+        # Same e-mail + same product -> the stored report is downloaded and the new reviews are appended to it.
+        # Anything else -> a new report. A Drive problem never blocks the request: a new report is built instead.
+        existing = None
+        try:
+            existing = drive_store.find_report(request.recipient_email, resolved_url)
+            if existing:
+                drive_store.download_report(existing["file_id"], workbook)
+                from openpyxl import load_workbook
+                load_workbook(workbook, read_only=True).close()       # must be a readable workbook
+        except Exception as exc:
+            log.warning("Stored report could not be used (%s); a new report will be created", type(exc).__name__)
+            if existing:
+                _alert_admin("Flipkart report: stored report unreadable",
+                             f"Request {request.request_id}: {type(exc).__name__}. A new report was built; the old Drive file was kept.")
+            existing = None
+            workbook.unlink(missing_ok=True)
+        if existing and request.request_id in (existing.get("request_ids") or []):
+            # A retry of a request that already saved its update: send the stored report, never append twice.
+            log.info("Request %s was already stored; re-sending the saved report without appending again", request.request_id)
+            delivery = _send_with_retry(request.request_id, request.recipient_email, resolved_name,
+                                        request.start_date.isoformat(), request.end_date.isoformat(), workbook,
+                                        0, "success", request.duration, request.duration_unit)
+            state.update(status="Email Sent", email_delivery=delivery, report_mode="resent",
+                         completed_at=datetime.now().isoformat(timespec="seconds"))
+            status_path.write_text(json.dumps(state, indent=2, default=str), encoding="utf-8")
+            return 0
+        settings["append_mode"] = bool(existing)
+        state["report_mode"] = "updated" if existing else "new"
         result = process_product(driver, resolved_url, resolved_name, settings, selectors, {"out": out, "diag": diag})
         result["request_id"] = request.request_id
         result["login_status"] = login.status
@@ -129,8 +159,6 @@ def run(data):
         result["resolved_url"] = resolved_url
         state.update({"result": result, "product_name_resolved": resolved_name,
                       "completed_at": datetime.now().isoformat(timespec="seconds")})
-        # workbook = out / (re.sub(r'[\\/*?:"<>|]', "", resolved_name).strip() + ".xlsx")
-        workbook = out / safe_filename(resolved_name)
         if result.get("no_reviews_found"):
             # No reviews in the requested date range: no empty report, just a message e-mail.
             state["status"] = "Completed"
@@ -144,6 +172,18 @@ def run(data):
                              f"Request {request.request_id} for {resolved_name}: {result.get('failure_reason') or 'no review entries found'}")
         elif result.get("status") in ("success", "partial") and workbook.is_file():
             state["status"] = "Partial" if result["status"] == "partial" else "Completed"
+            # Store the report (and its review data) BEFORE delivering it.
+            try:
+                saved = drive_store.save_report(request.recipient_email, resolved_url, resolved_name, workbook,
+                                                request.request_id,
+                                                existing["file_id"] if existing else None)
+                state["drive"] = {"file_name": (saved or {}).get("file_name"), "updates": (saved or {}).get("updates")}
+            except Exception as exc:
+                log.error("Report could not be stored in Drive (%s)", type(exc).__name__)
+                state["drive_error"] = type(exc).__name__
+                _alert_admin("Flipkart report: Drive save failed",
+                             f"Request {request.request_id} for {resolved_name}: {type(exc).__name__}. "
+                             "The report was still e-mailed, but it is not stored in Drive.")
             delivery = _send_with_retry(request.request_id, request.recipient_email, resolved_name,
                                            request.start_date.isoformat(), request.end_date.isoformat(), workbook,
                                            result.get("valid_reviews", 0), result["status"],

@@ -119,7 +119,40 @@ def _style_header(ws, row, width=22):
 
 
 # --------------------------------------------------------------------------- #
-def _write_star_sheet(wb, product, run_date, counts, overall, date_range=None):
+def _append_star_sheet(wb, product, label, counts, overall, date_range=None):
+    """Update an EXISTING first page. Table 1 is refreshed to the latest counts; Table 2 gets one new
+    column (header = this run's date and time) holding the CHANGE versus the previous run. Earlier
+    columns of Table 2 are never touched."""
+    ws = wb["Star Ratings"]
+    _banner(ws, product, "Flipkart Rating Counts Analysis")
+    ws["A3"] = ("Aggregate counts cover ALL ratings shown by Flipkart (all time), not only the review date range "
+                f"{_range_text(date_range)}.")
+    ws["A3"].font = Font(italic=True)
+    prev = [ws.cell(r, 2).value for r in range(5, 12)]            # previous latest values (rows 5-11)
+    if counts and all(k in counts for k in STARS):
+        new = [counts[s] for s in STARS] + [counts[5] + counts[4], counts[3] + counts[2] + counts[1]]
+        new_overall = overall if overall is not None else "N/A"
+    else:
+        new, new_overall = ["N/A"] * 7, "N/A"
+    ws.cell(4, 2, label)
+    for i, v in enumerate(new):
+        ws.cell(5 + i, 2, v)
+    ws.cell(12, 2, new_overall)
+
+    col = _date_col(ws, 15, label)
+    ws.cell(15, col, label)
+    for i in range(7):
+        cur, old = _num(new[i]), _num(prev[i])
+        cell = ws.cell(16 + i, col, (cur - old) if cur is not None and old is not None else "-")
+        if cur is not None and old is not None:
+            cell.number_format = "+0;-0;0"
+    _style_header(ws, 4)
+    _style_header(ws, 15)
+
+
+def _write_star_sheet(wb, product, run_date, counts, overall, date_range=None, append_mode=False, label=None):
+    if append_mode and "Star Ratings" in wb.sheetnames:
+        return _append_star_sheet(wb, product, label or run_date, counts, overall, date_range)
     ws = _sheet(wb, "Star Ratings")
     _banner(ws, product, "Flipkart Rating Counts Analysis")
     ws["A3"] = ("Aggregate counts cover ALL ratings shown by Flipkart (all time), not only the review date range "
@@ -412,6 +445,85 @@ def _write_review_sheet(wb, sheet_name, subtitle, product, run_date, reviews, st
     return added, removed
 
 
+def _block_rows(reviews, run_date, scraped_at, window, include_uncertain):
+    """Rows of one scrape exactly as collected: no comparison with earlier blocks, no de-duplication.
+    The same date-range rule as a fresh report is applied, so a block equals a stand-alone report."""
+    window = window or (None, None)
+    filtering = bool(window[0] or window[1])
+    out = []
+    for rv in reviews:
+        row = _row_for(rv, run_date, scraped_at)
+        if filtering and rv.get("Date Precision"):
+            row[_RANGE_COL - 1] = date_status_text(rv["Date Precision"], _row_state(row, window))
+        if filtering:
+            st = _row_state(row, window)
+            if not (st == "in" or (st == "uncertain" and include_uncertain)):
+                continue
+        out.append(row)
+    return out
+
+
+def _last_used_row(ws):
+    for r in range(ws.max_row, 0, -1):
+        if any(ws.cell(r, c).value not in (None, "") for c in range(1, len(REPORT_HEADERS) + 1)):
+            return r
+    return 0
+
+
+def _period_text(info, date_range):
+    start, end = date_range or (None, None)
+    try:
+        n = int(info.get("duration"))
+        unit = str(info.get("duration_unit") or "").strip().lower()
+        unit = unit[:-1] if n == 1 and unit.endswith("s") else unit
+        head = f"Last {n} {unit}"
+    except (TypeError, ValueError):
+        head = "Update"
+    if start and end:
+        head += f" ({start.isoformat()} to {end.isoformat()})"
+    return head
+
+
+def _append_review_block(wb, sheet_name, label, period, reviews, stars, counts, run_date, scraped_at,
+                         window, include_uncertain):
+    """Append one titled block BELOW everything already on the sheet:
+         title row  ->  summary table (this block only)  ->  review table header  ->  the scraped rows.
+    Existing rows are never edited, removed or re-ordered. The product name is not repeated."""
+    ws = wb[sheet_name]
+    rows = _block_rows(reviews, run_date, scraped_at, window, include_uncertain)
+    top = _last_used_row(ws) + 3                       # two blank rows after the previous block
+    ws.merge_cells(start_row=top, start_column=1, end_row=top, end_column=5)
+    t = ws.cell(top, 1, f"Updated \u2013 {period} \u2013 {label}")
+    t.font, t.fill, t.alignment = Font(size=13, bold=True), YELLOW, CENTER
+
+    sum_head = top + 2
+    total_row = sum_head + 1 + len(stars)
+    head_row = total_row + 3
+    first = head_row + 1
+    last = max(first + len(rows) - 1, first)
+    for i, h in enumerate(_SUMMARY_HEADERS):
+        cell = ws.cell(sum_head, 1 + i, h)
+        cell.font, cell.alignment, cell.border = Font(bold=True), CENTER, BOX
+    ws.row_dimensions[sum_head].height = 32
+    for i, s in enumerate(stars):
+        r = sum_head + 1 + i
+        ws.cell(r, 1, s)
+        ws.cell(r, 2, int(counts[s]) if counts and s in counts else "N/A")
+        ws.cell(r, 3, f"=COUNTIF($B${first}:$B${last},A{r})")
+    ws.cell(total_row, 1, "Total")
+    ws.cell(total_row, 2, f"=SUM(B{sum_head + 1}:B{total_row - 1})")
+    ws.cell(total_row, 3, f"=SUM(C{sum_head + 1}:C{total_row - 1})")
+    for c in (1, 2, 3):
+        ws.cell(total_row, c).font = Font(bold=True)
+    for j, h in enumerate(REPORT_HEADERS, 1):
+        cell = ws.cell(head_row, j, h)
+        cell.font, cell.alignment, cell.border = Font(bold=True), CENTER, BOX
+    for i, row in enumerate(rows):
+        for j, src in enumerate(_REPORT_IDX, 1):
+            ws.cell(first + i, j, row[src])
+    return len(rows)
+
+
 def _existing_rows(ws):
     """Rows already in a review sheet, returned in the INTERNAL layout (REVIEW_HEADERS).
 
@@ -468,7 +580,8 @@ def _write_time_sheet(wb, date_range=None, run_info=None):
 
 
 def update_workbook(path, product, run_date, star_counts, overall, keywords, neg_reviews,
-                    pos_reviews=None, stats=None, date_range=None, run_info=None, include_uncertain=False):
+                    pos_reviews=None, stats=None, date_range=None, run_info=None, include_uncertain=False,
+                    append_mode=False):
     """Update every sheet; one failing sheet never blocks the others. Saves atomically.
     Sheets: Star Ratings | Positive Reviews | Negative Reviews | Time.
     `date_range` = (start, end) inclusive dates: the individual review sheets then list only reviews dated
@@ -484,6 +597,13 @@ def update_workbook(path, product, run_date, star_counts, overall, keywords, neg
     run_info = {**run_info, "scraped_at": scraped_at}
 
     def reviews():
+        if append_mode and NEGATIVE_SHEET in wb.sheetnames and POSITIVE_SHEET in wb.sheetnames:
+            label, period = scraped_at[:16], _period_text(run_info, date_range)
+            stats["neg_added"] = _append_review_block(wb, NEGATIVE_SHEET, label, period, neg_reviews, (3, 2, 1),
+                                                      star_counts, run_date, scraped_at, date_range, include_uncertain)
+            stats["pos_added"] = _append_review_block(wb, POSITIVE_SHEET, label, period, pos_reviews or [], (5, 4),
+                                                      star_counts, run_date, scraped_at, date_range, include_uncertain)
+            return
         legacy = _legacy_negative_rows(wb)
         extra = {}
         stats["neg_added"], stats["neg_placeholders_removed"] = _write_review_sheet(
@@ -498,7 +618,8 @@ def update_workbook(path, product, run_date, star_counts, overall, keywords, neg
         for k, v in extra.items():
             stats[k] += v
 
-    steps = [("Star Ratings", lambda: _write_star_sheet(wb, product, run_date, star_counts, overall, date_range))]
+    steps = [("Star Ratings", lambda: _write_star_sheet(wb, product, run_date, star_counts, overall, date_range,
+                                                                      append_mode, scraped_at[:16]))]
     steps += [("Reviews", reviews), ("Time", lambda: _write_time_sheet(wb, date_range, run_info))]
     for label, fn in steps:
         try:
