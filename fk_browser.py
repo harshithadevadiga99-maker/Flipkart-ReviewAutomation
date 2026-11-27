@@ -1,4 +1,4 @@
-# v7
+# v8
 """Selenium layer. Every step is defensive: it retries, falls back, and never hangs the run."""
 import logging
 import re
@@ -111,7 +111,9 @@ def _visible(driver, xpath):
 # Live page adapter. fk_collect.py talks to this interface only, so the whole
 # pipeline can be tested offline with a fake page.
 # --------------------------------------------------------------------------- #
-_DATE_COUNT_JS = ("return (document.body.innerText.match(/\\d+\\s+(?:day|week|month|year)s?\\s+ago/gi)||[]).length")
+# v8 FIX: also counts 'just now' and 'N seconds/minutes/hours ago' (reviews written today).
+_DATE_COUNT_JS = ("return (document.body.innerText.match("
+                  "/(?:just now|(?:\\d+|an?)\\s+(?:second|minute|hour|day|week|month|year)s?\\s+ago)/gi)||[]).length")
 
 # Click ONLY the 'more' control that follows a text span ending in an ellipsis
 # (never the capital-M "More" menu in the site header).
@@ -132,13 +134,21 @@ return n;"""
 # with a 'Read more' link, (3) click the excerpt of a topic-list card -> a 'Complete Review' side panel opens,
 # (4) click the review text itself.  The full text is then written back into the live page, so the normal
 # parser reads the complete review.  If nothing works the visible (partial) text is kept.
+#
+# v8: a review WITH stars (Overall lists) is never opened by clicking its text (step 3/4): there it only
+# 'more' and the photo viewer work. If both fail, fk_collect completes the text from the same review in a
+# topic list (cards without stars), where clicking the card opens the 'Complete Review' panel.
 # --------------------------------------------------------------------------- #
 EXPAND_STATS = {"expanded": 0, "inline": 0, "photo_viewer": 0, "complete_review_panel": 0, "text_click": 0,
                 "not_expanded": 0}
 _EXPAND_LOCK = threading.Lock()
 
+# v8: cards opened through the 'Complete Review' panel (topic lists: every card is clicked).
+PANEL_STATS = {"read": 0, "failed": 0, "no_stars": 0}
+_PANEL_LOGGED = {"debug": False}
+
 # Find review cards whose text is cut off and tag them (data-fk-card / data-fk-body / data-fk-id).
-# Returns [{id, prefix, vis, kind('more'|'ellipsis'), title}]
+# Returns [{id, prefix, vis, kind('more'|'ellipsis'), title, rated}]
 _TRUNC_SCAN_JS = r"""
 const norm=t=>(t||'').replace(/\s+/g,' ').trim();
 const ELL=/(\.\.\.|\u2026)\s*$/, MORE=/^(read\s+)?more$/i, VER=/(verified purchase|certified buyer)/i;
@@ -173,7 +183,8 @@ for(const e of leaves){
   const id=String(nextId++);
   card.setAttribute('data-fk-card',id); body.setAttribute('data-fk-body',id);
   const prev=body.previousElementSibling; const title=prev?norm(prev.textContent):'';
-  out.push({id:id,prefix:bt.slice(0,40),vis:bt.length,kind:kind,title:title.length<=120?title:''});
+  const rated=[...card.querySelectorAll('span,div')].some(x=>x.children.length===0&&RATE.test(norm(x.textContent)));
+  out.push({id:id,prefix:bt.slice(0,40),vis:bt.length,kind:kind,title:title.length<=120?title:'',rated:rated});
 }
 return out;"""
 
@@ -337,6 +348,92 @@ b.setAttribute('data-fk-done','1'); return true;"""
 
 _MARK_DONE_JS = "const b=document.querySelector('[data-fk-body=\"'+arguments[0]+'\"]'); if(b) b.setAttribute('data-fk-done','1'); return true;"
 
+# --------------------------------------------------------------------------- #
+# v8: topic lists. Cards there show NO stars, only an excerpt, the name and the date. EVERY such card is
+# clicked: the 'Complete Review' side panel then shows the stars, the headline (e.g. 'Delightful') and the
+# body (e.g. 'Best quality'). Those are written back into the card so the normal parser reads them.
+# Set panel_all_cards=true in fk_config.json to click cards that already show stars too (not needed).
+# --------------------------------------------------------------------------- #
+_PANEL_TAG_JS = r"""
+const norm=t=>(t||'').replace(/\s+/g,' ').trim();
+const all=!!arguments[0], limit=arguments[1]||60; let nextId=arguments[2]||5000;
+const shown=e=>!!(e.offsetWidth||e.offsetHeight||e.getClientRects().length);
+const VER=/^[\W_]*(certified buyer|verified purchase)/i, RATE=/^[1-5](\.0)?$/;
+const SKIP=/^([\u2022\u00b7|]+|(read\s+)?more|helpful.*|,.*|[\W_]*(certified buyer|verified purchase).*|[\W_]*(just now|(\d+|an?)\s+(second|minute|hour|day|week|month|year)s?\s+ago|today|yesterday).*)$/i;
+const verCount=n=>((n.innerText||'').match(/verified purchase|certified buyer/gi)||[]).length;
+const hdr=[...document.querySelectorAll('span,div,p,h1,h2,h3')].find(e=>e.children.length===0&&/^complete review$/i.test(norm(e.textContent))&&shown(e));
+let panelRoot=null;
+if(hdr){panelRoot=hdr; for(let i=0;i<6&&panelRoot.parentElement;i++){panelRoot=panelRoot.parentElement; if(/(certified buyer|verified purchase)/i.test(panelRoot.innerText||''))break;}}
+const marks=[...document.querySelectorAll('span,div,p')].filter(e=>e.children.length===0&&shown(e)&&VER.test(norm(e.textContent)));
+const seen=new Set(), out=[];
+for(const m of marks){
+  if(out.length>=limit) break;
+  if(panelRoot&&panelRoot.contains(m)) continue;
+  let n=m, card=null;
+  for(let i=0;i<12&&n.parentElement;i++){n=n.parentElement; const c=verCount(n); if(c===1) card=n; else if(c>1) break;}
+  if(!card||seen.has(card)||card.hasAttribute('data-fk-panel-done')) continue;
+  seen.add(card);
+  const cl=[...card.querySelectorAll('span,div,p')].filter(e=>e.children.length===0);
+  if(!all && cl.some(e=>RATE.test(norm(e.textContent)))) continue;
+  const ex=cl.find(e=>{const t=norm(e.textContent); return t&&!SKIP.test(t)&&!RATE.test(t);});
+  if(!ex) continue;
+  const id=String(nextId++);
+  card.setAttribute('data-fk-card',id); card.setAttribute('data-fk-panel',id); ex.setAttribute('data-fk-ex',id);
+  out.push({id:id, prefix:norm(ex.textContent).replace(/(\.\.\.|\u2026)\s*$/,'').slice(0,30), key:norm(card.innerText).slice(0,160)});
+}
+return out;"""
+
+# Read the open 'Complete Review' panel: star count, headline, body.
+# Returns match:false while the panel still shows a different review (stale panel).
+_PANEL_FULL_JS = r"""
+const norm=t=>(t||'').replace(/\s+/g,' ').trim();
+const sq=t=>norm(t).replace(/\s+/g,'').toLowerCase();
+const shown=e=>!!(e.offsetWidth||e.offsetHeight||e.getClientRects().length);
+const hdr=[...document.querySelectorAll('span,div,p,h1,h2,h3')].find(e=>e.children.length===0&&/^complete review$/i.test(norm(e.textContent))&&shown(e));
+if(!hdr) return {found:false};
+let root=hdr; for(let i=0;i<6&&root.parentElement;i++){root=root.parentElement; if(/(certified buyer|verified purchase)/i.test(root.innerText||''))break;}
+const leaves=[...root.querySelectorAll('*')].filter(e=>e.children.length===0&&norm(e.textContent)&&!/^(script|style)$/i.test(e.tagName));
+let texts=leaves.map(e=>norm(e.textContent)).filter(t=>!/^complete review$/i.test(t));
+const pq=sq(arguments[0]||'').slice(0,25);
+if(pq && !sq(texts.join(' ')).includes(pq)) return {found:true,match:false};
+// stars: a group of exactly 5 icons; the filled ones are green
+const green=c=>{const m=/rgba?\((\d+),\s*(\d+),\s*(\d+)/.exec(c||''); if(!m) return false; const r=+m[1],g=+m[2],b=+m[3]; return g>r+20&&g>b+20;};
+const colorOf=el=>{const p=el.querySelector&&el.querySelector('path,polygon,circle'); const s=getComputedStyle(p||el);
+  return (s.fill&&s.fill!=='none')?s.fill:(s.color||s.backgroundColor);};
+const groups=new Map();
+[...root.querySelectorAll('svg,img')].filter(shown).forEach(el=>{const p=el.parentElement; if(!groups.has(p)) groups.set(p,[]); groups.get(p).push(el);});
+let stars=null; for(const [p,g] of groups){ if(g.length===5){ stars=g.filter(el=>green(colorOf(el))).length; break; } }
+// split the text leaves: [rating] [headline] [body] [name, city] [Certified Buyer] [date]
+const isDate=t=>/^[\W_]*(?:(?:certified buyer|verified purchase)[\W_]*)?(just now|(\d+|an?)\s+(second|minute|hour|day|week|month|year)s?\s+ago|today|yesterday|[A-Za-z]{3,9}\.?\s+\d{1,2},?\s*\d{4})/i.test(t);
+const isVer=t=>/^[\W_]*(certified buyer|verified purchase)/i.test(t);
+let cut=texts.findIndex(t=>isVer(t)||isDate(t)); if(cut<0) cut=texts.length;
+let pre=texts.slice(0,cut);
+if(pre.length){ if(/^,/.test(pre[pre.length-1])) pre=pre.slice(0,-2); else pre=pre.slice(0,-1); }   // drop name / city
+const num=pre.find(t=>/^[1-5](\.0)?$/.test(t));
+if(stars===null && num) stars=parseInt(num);
+pre=pre.filter(t=>!/^[1-5](\.0)?$/.test(t)&&!/^[\u2022\u00b7|]+$/.test(t));
+const title=pre.length>=2?pre[0]:'', body=pre.length>=2?pre.slice(1).join(' '):(pre[0]||'');
+const out={found:true,match:true,stars:stars,title:title,body:body};
+if(stars===null) out.html=(root.outerHTML||'').replace(/\s+/g,' ').slice(0,1800);
+return out;"""
+
+# Write the panel's rating / headline / body back into the card, in the leaf order the parser expects.
+_PANEL_APPLY_JS = r"""
+const id=arguments[0], rating=arguments[1], title=arguments[2], body=arguments[3];
+const card=document.querySelector('[data-fk-card="'+id+'"]');
+const ex=card&&card.querySelector('[data-fk-ex="'+id+'"]'); if(!ex) return false;
+const mk=(t,hide)=>{const s=document.createElement('span'); s.textContent=t; s.setAttribute('data-fk-injected','1'); if(hide) s.style.display='none'; return s;};
+const p=ex.parentNode;
+if(rating) p.insertBefore(mk(String(rating),true),ex);
+if(title)  p.insertBefore(mk(title,false),ex);
+if(body)   p.insertBefore(mk(body,false),ex);
+ex.remove();
+[...card.querySelectorAll('span,div,a')].forEach(x=>{if(x.children.length===0&&/^(read\s+)?more$/i.test((x.textContent||'').trim()))x.remove();});
+card.setAttribute('data-fk-panel-done','1'); return true;"""
+
+_PANEL_DONE_JS = ("const c=document.querySelector('[data-fk-card=\"'+arguments[0]+'\"]');"
+                  "if(c) c.setAttribute('data-fk-panel-done','1'); return true;")
+
 # Flipkart loads more reviews when the 'Hang on, loading content' sentinel scrolls into view.
 
 _SCROLL_JS = """
@@ -411,6 +508,7 @@ class LivePage:
         self._deep_ok = True
         self._viewer_snap = False
         self._last_trace = []
+        self._panel_cache = {}         # v8: (card text) -> panel data already read
         self._full_cache, self._next_card_id, self._deep_failures = {}, 1, 0
 
     # -- basic state -------------------------------------------------------
@@ -473,12 +571,76 @@ class LivePage:
             return 0
         if n:
             time.sleep(0.6)
+        # v8: topic lists - click EVERY star-less card and read its 'Complete Review' panel
+        if self.settings.get("panel_enrich_cards", True):
+            try:
+                n += self._enrich_from_panel()
+            except WebDriverException as exc:
+                log.debug("panel enrichment interrupted: %s", str(exc)[:100])
         if self.settings.get("expand_truncated_reviews", True) and getattr(self, "_deep_ok", True):
             try:
                 n += self._expand_truncated()
             except WebDriverException as exc:
                 log.debug("deep expansion interrupted: %s", str(exc)[:100])
         return n
+
+    # -- v8: Complete Review panel for every topic-list card ---------------
+    def _enrich_from_panel(self):
+        """Click every (star-less) review card, read its 'Complete Review' panel and write the rating,
+        headline and body back into the page so the normal parser sees the complete record."""
+        limit = int(self.settings.get("panel_max_per_round", 60))
+        cards = self._js(_PANEL_TAG_JS, bool(self.settings.get("panel_all_cards", False)),
+                         limit, self._next_card_id) or []
+        if not cards:
+            return 0
+        self._next_card_id += len(cards) + 1
+        budget_end = time.time() + float(self.settings.get("panel_round_seconds", 240))
+        done = 0
+        for c in cards:
+            rid, prefix, key = c["id"], c["prefix"], c["key"]
+            data = self._panel_cache.get(key)
+            if data is None:
+                if time.time() > budget_end:
+                    break                                   # untouched cards are picked up next round
+                data = self._panel_open_and_read(rid, prefix)
+                if data:
+                    self._panel_cache[key] = data
+            if data:
+                self._js(_PANEL_APPLY_JS, rid, data.get("stars"), data.get("title", ""), data.get("body", ""))
+                with _EXPAND_LOCK:
+                    PANEL_STATS["read"] += 1
+                    if data.get("stars") is None:
+                        PANEL_STATS["no_stars"] += 1
+                done += 1
+            else:
+                self._js(_PANEL_DONE_JS, rid)
+                with _EXPAND_LOCK:
+                    PANEL_STATS["failed"] += 1
+                log.info("review card %s: Complete Review panel could not be read (excerpt %r)", rid, prefix)
+                self._snapshot_once("panel_not_read")
+        return done
+
+    def _panel_open_and_read(self, rid, prefix):
+        wait = max(float(self.settings.get("expand_wait_seconds", 3)), 4.0)
+        url_before = self.url
+        for _attempt in range(2):
+            if not self._click_css('[data-fk-ex="%s"]' % rid):
+                continue
+            end, data = time.time() + wait, None
+            while time.time() < end:
+                r = self._js(_PANEL_FULL_JS, prefix) or {}
+                if r.get("found") and r.get("match"):
+                    data = r
+                    break
+                time.sleep(0.3)
+            self._close_overlay(rid, prefix, url_before)
+            if data and (data.get("body") or data.get("title")):
+                if data.get("stars") is None and not _PANEL_LOGGED["debug"]:
+                    _PANEL_LOGGED["debug"] = True
+                    log.info("panel star rating not found. Panel HTML (send this to fix the star reader): %s",
+                             data.get("html"))
+                return data
+        return None
 
     # -- deep expansion of cut-off reviews ---------------------------------
     def _js(self, script, *args):
@@ -543,6 +705,7 @@ class LivePage:
                     "const e=document.querySelector(arguments[0]); if(!e) return false; e.click(); return true;", css))
             except WebDriverException:
                 return False
+
     def _debug_viewer(self, rid, prefix):
         """The viewer is open but 'Read more' did not expand it: log the viewer's HTML and save a screenshot once."""
         try:
@@ -556,6 +719,7 @@ class LivePage:
                 self.snapshot("viewer_read_more_failed")
             except Exception:
                 pass
+
     def _read_overlay_full(self, rid, prefix, title, vis):
         """Photo viewer is open: wait for its 'Read more', click it where the words are (real mouse click, then the
         full mouse-event sequence, then a plain element click) and wait for the longer text after each try."""
@@ -592,6 +756,7 @@ class LivePage:
         if found_any and not self._full_text_ok(text, prefix, vis):
             self._debug_viewer(rid, prefix)
         return text
+
     def _full_text_ok(self, full, prefix, vis):
         full = (full or "").strip()
         sq = lambda t: re.sub(r"\s+", "", t or "").lower()   # line breaks/spacing differ between list and viewer
@@ -693,6 +858,11 @@ class LivePage:
             else:
                 self._close_overlay(rid, prefix, url_before)
                 trace.append("photo %d opened no viewer" % (i + 1))
+        # v8: a review WITH stars (Overall lists) is not opened by clicking its text - that shows nothing there.
+        # Its text stays partial here and fk_collect completes it from the same review in a topic list.
+        if c.get("rated") and not self.settings.get("panel_click_rated", False):
+            trace.append("rated card: 'more' and photo gave no full text; it is completed from a topic list")
+            return "", ""
         # 3) topic-list card or plain text: click the text -> 'Complete Review' panel
         if self._click_css('[data-fk-body="%s"]' % rid):
             state = poll(lambda: self._overlay_state(rid, prefix), wait)
