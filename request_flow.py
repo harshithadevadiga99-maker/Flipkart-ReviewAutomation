@@ -67,6 +67,7 @@ class ReportRequest:
     recipient_email: str
     start_date: date
     end_date: date
+    append: bool = False
 
     @classmethod
     def from_mapping(cls, data):
@@ -92,7 +93,8 @@ class ReportRequest:
             expected_start, _ = calculate_date_range(duration, get("DURATION_UNIT"), end)
             if start != expected_start:
                 raise ValueError("START_DATE does not match DURATION, DURATION_UNIT, and END_DATE")
-        return cls(rid, url, duration, get("DURATION_UNIT").lower(), email, start, end)
+                append = get("APPEND").lower() in ("true", "1", "yes")
+        return cls(rid, url, duration, get("DURATION_UNIT").lower(), email, start, end, append)
 
     def as_dict(self):
         return {"request_id": self.request_id, "product_url": self.product_url, "duration": self.duration,
